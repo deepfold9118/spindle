@@ -1,4 +1,4 @@
-//! The Spindle mark, drawn from the logo's SVG path (assets/spindle-logo.svg).
+//! The Spindle mark, drawn from the symbol artwork (artwork/spindle_symbol.svg).
 //! The program icon (window, taskbar and the Windows .exe via build.rs) and the
 //! title-bar mark are both rasterised from this one path, so they always match.
 //! Self-contained (no egui) because build.rs includes this file too.
@@ -8,9 +8,16 @@
 /// Logo colour (the theme accent).
 pub const COLOR: [u8; 3] = [0xfb, 0x9e, 0x35];
 
-/// The logo outline: absolute M/C/L/Z commands from the SVG, filled even-odd
-/// (the outer wheel minus the two blade slots and the hub hole).
-pub const PATH: &str = include_str!("../assets/spindle-logo.path");
+/// The symbol artwork. Its single path (absolute M/C/L/Z commands) is filled even-odd:
+/// the outer wheel minus the two blade slots and the hub hole.
+pub const SVG: &str = include_str!("../../artwork/spindle_symbol.svg");
+
+/// The `d` attribute of the artwork's path.
+fn path_data() -> &'static str {
+    let start = SVG.find(" d=\"").map(|i| i + 4).unwrap_or(0);
+    let len = SVG[start..].find('"').unwrap_or(0);
+    &SVG[start..start + len]
+}
 
 /// Flatten the path into closed polygons (cubic segments split into straight pieces).
 pub fn polygons() -> Vec<Vec<[f32; 2]>> {
@@ -25,7 +32,7 @@ pub fn polygons() -> Vec<Vec<[f32; 2]>> {
             num.clear();
         }
     };
-    for ch in PATH.chars() {
+    for ch in path_data().chars() {
         match ch {
             'M' | 'C' | 'L' | 'Z' | 'z' => {
                 flush(&mut num, &mut nums);

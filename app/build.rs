@@ -49,7 +49,7 @@ fn embed_icon() {
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/logo.rs");
-    println!("cargo:rerun-if-changed=assets/spindle-logo.path");
+    println!("cargo:rerun-if-changed=../artwork/spindle_symbol.svg");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
