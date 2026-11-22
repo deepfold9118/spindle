@@ -367,6 +367,12 @@ fn tasks(app: &mut App, ui: &mut egui::Ui) {
         {
             app.toggle_blend_association(&ctx);
         }
+        if task_row(ui, &pal, check(app.on_path), None, "Add Spindle to PATH", true)
+            .on_hover_text("Run spindle and spindle-mcp by name in a terminal")
+            .clicked()
+        {
+            app.toggle_path(&ctx);
+        }
         if cfg!(windows) && app.opens_blend {
             if task_row(ui, &pal, I::FILE_BOX, None, "Choose Default App for .blend…", true)
                 .on_hover_text("Windows asks you to pick the default app yourself: choose Spindle for .blend")

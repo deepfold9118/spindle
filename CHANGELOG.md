@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.1] - 2026-11-22
+
+- **Installers**: `install.ps1` (Windows) and `install.sh` (Linux, macOS) install Spindle for the
+  current user with one command: a SHA-256-checked download of the latest release, a Start menu
+  or application-menu shortcut, PATH, and optionally start at sign-in and `.blend` opening.
+  Running them again upgrades; `-Uninstall` / `--uninstall` removes the programs, shortcut,
+  PATH entry and registrations and leaves your library alone. Each release carries both.
+- **Add Spindle to PATH**: a new Customize Program switch, and `spindle desktop --path on|off`.
+  Windows adds the folder to the user `Path`; Linux and macOS link the programs into
+  `~/.local/bin`.
+- Moving Spindle re-points start at sign-in, `.blend` opening and PATH, but a second copy (a
+  development build, say) no longer takes them over from one that still exists.
+
 ## [0.1.0] - 2026-11-22
 
 First release.

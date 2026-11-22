@@ -1,13 +1,16 @@
-//! Desktop integration: starting Spindle when the user signs in, and opening `.blend`
-//! files with Spindle (which picks a build for each file, see `blendfile`).
+//! Desktop integration: starting Spindle when the user signs in, opening `.blend` files
+//! with Spindle (which picks a build for each file, see `blendfile`), and putting the
+//! programs on PATH.
 //!
-//! - Windows: `HKCU\...\CurrentVersion\Run`, and an "Open with" registration under
-//!   `HKCU\Software\Classes`. Windows doesn't let programs make themselves the default
-//!   app; `open_default_apps()` opens the Settings page where the user picks Spindle.
-//! - Linux: `~/.config/autostart/spindle.desktop`, and `~/.local/share/applications/
-//!   spindle.desktop` with the `application/x-blender` MIME type (also made the default).
-//! - macOS: a LaunchAgent for signing in. File associations need an app bundle, which
-//!   Spindle doesn't ship yet, so `set_blend_association` reports that.
+//! - Windows: `HKCU\...\CurrentVersion\Run`, an "Open with" registration under
+//!   `HKCU\Software\Classes`, and the user `Path` (`HKCU\Environment`). Windows doesn't let
+//!   programs make themselves the default app; `open_default_apps()` opens the Settings page
+//!   where the user picks Spindle.
+//! - Linux: `~/.config/autostart/spindle.desktop`, `~/.local/share/applications/
+//!   spindle.desktop` with the `application/x-blender` MIME type (also made the default),
+//!   and links in `~/.local/bin`.
+//! - macOS: a LaunchAgent for signing in and links in `~/.local/bin`. File associations
+//!   need an app bundle, which Spindle doesn't ship yet, so `set_blend_association` says so.
 
 use anyhow::Result;
 #[cfg(not(windows))]
@@ -43,14 +46,83 @@ pub fn open_default_apps() -> bool {
     imp::open_default_apps()
 }
 
-/// Re-point existing registrations at `app_exe` (after Spindle moved or was updated).
+/// Names of the programs in an install folder (with the platform's .exe suffix).
+pub fn program_names() -> [String; 3] {
+    ["spindle", "spindle_app", "spindle-mcp"].map(|b| format!("{b}{}", std::env::consts::EXE_SUFFIX))
+}
+
+/// The Spindle folder on PATH, if any: on Windows the user `Path` entry holding `spindle.exe`,
+/// elsewhere the folder `~/.local/bin/spindle` links to.
+pub fn path_dir() -> Option<PathBuf> {
+    imp::path_dir()
+}
+
+/// Whether the programs in `dir` are on PATH (a later entry than `path_dir` counts too).
+pub fn is_on_path(dir: &Path) -> bool {
+    imp::is_on_path(dir)
+}
+
+/// Put the programs in `dir` on PATH (or take them off). Windows: an entry in the user
+/// `Path` (new terminals see it). Linux/macOS: links in `~/.local/bin`.
+pub fn set_on_path(on: bool, dir: &Path) -> Result<()> {
+    imp::set_on_path(on, dir)
+}
+
+/// Where Linux/macOS links go, and whether it's on PATH already (it isn't on stock macOS).
+pub fn user_bin() -> Option<(PathBuf, bool)> {
+    let bin = directories::BaseDirs::new()?.home_dir().join(".local").join("bin");
+    let on = std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d == bin));
+    Some((bin, on))
+}
+
+/// Re-point registrations at `app_exe` when the copy they point at is gone (Spindle moved).
+/// Registrations of another copy that still exists are left alone, so starting a second
+/// copy (a development build, say) doesn't take them over.
 pub fn refresh(app_exe: &Path) {
-    if autostart().is_some_and(|p| p != app_exe) {
+    let gone = |p: &Path| p != app_exe && !p.exists();
+    if autostart().is_some_and(|p| gone(&p)) {
         let _ = set_autostart(true, app_exe);
     }
-    if blend_association().is_some_and(|p| p != app_exe) {
+    if blend_association().is_some_and(|p| gone(&p)) {
         let _ = set_blend_association(true, app_exe);
     }
+    if let (Some(old), Some(dir)) = (path_dir(), app_exe.parent()) {
+        if old != dir && !old.join(&program_names()[0]).exists() {
+            let _ = set_on_path(false, &old);
+            let _ = set_on_path(true, dir);
+        }
+    }
+}
+
+/// Unix: the folder a `~/.local/bin` link points into, when it's one of Spindle's programs.
+#[cfg(not(windows))]
+fn linked_dir() -> Option<PathBuf> {
+    let (bin, _) = user_bin()?;
+    let target = std::fs::read_link(bin.join("spindle")).ok()?;
+    target.parent().map(Path::to_path_buf)
+}
+
+#[cfg(not(windows))]
+fn set_links(on: bool, dir: &Path) -> Result<()> {
+    let (bin, _) = user_bin().context("no home directory")?;
+    for name in program_names() {
+        let link = bin.join(&name);
+        let ours = std::fs::read_link(&link).is_ok_and(|t| t.parent() == Some(dir));
+        if on {
+            std::fs::create_dir_all(&bin)?;
+            if std::fs::symlink_metadata(&link).is_ok() {
+                if std::fs::read_link(&link).is_err() {
+                    anyhow::bail!("{} exists and isn't a link; not replacing it", link.display());
+                }
+                std::fs::remove_file(&link)?;
+            }
+            std::os::unix::fs::symlink(dir.join(&name), &link)
+                .with_context(|| format!("linking {}", link.display()))?;
+        } else if ours {
+            std::fs::remove_file(&link)?;
+        }
+    }
+    Ok(())
 }
 
 /// `"C:\x\spindle_app.exe" --tray` -> `C:\x\spindle_app.exe`
@@ -145,6 +217,90 @@ mod imp {
     pub fn open_default_apps() -> bool {
         std::process::Command::new("explorer.exe").arg("ms-settings:defaultapps").spawn().is_ok()
     }
+
+    /// `%LOCALAPPDATA%\Programs\Spindle` -> `C:\Users\me\AppData\Local\Programs\Spindle`
+    fn expand(entry: &str) -> String {
+        let mut out = String::new();
+        let mut rest = entry;
+        while let Some(start) = rest.find('%') {
+            let Some(len) = rest[start + 1..].find('%') else { break };
+            let name = &rest[start + 1..start + 1 + len];
+            out.push_str(&rest[..start]);
+            match std::env::var(name) {
+                Ok(v) => out.push_str(&v),
+                Err(_) => out.push_str(&rest[start..start + len + 2]),
+            }
+            rest = &rest[start + len + 2..];
+        }
+        out.push_str(rest);
+        out
+    }
+
+    fn same_dir(entry: &str, dir: &Path) -> bool {
+        let e = expand(entry);
+        e.trim_end_matches('\\').eq_ignore_ascii_case(dir.to_string_lossy().trim_end_matches('\\'))
+    }
+
+    /// The user Path, unexpanded, and whether it's REG_EXPAND_SZ.
+    fn user_path() -> (Vec<String>, bool) {
+        let Ok(env) = hkcu().open_subkey_with_flags("Environment", KEY_READ) else { return (Vec::new(), true) };
+        match env.get_raw_value("Path") {
+            Ok(v) => {
+                let wide: Vec<u16> = v.bytes.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+                let text = String::from_utf16_lossy(&wide);
+                let text = text.trim_end_matches('\0');
+                let entries = text.split(';').filter(|e| !e.is_empty()).map(str::to_owned).collect();
+                (entries, v.vtype == winreg::enums::REG_EXPAND_SZ)
+            }
+            Err(_) => (Vec::new(), true),
+        }
+    }
+
+    pub fn path_dir() -> Option<PathBuf> {
+        let (entries, _) = user_path();
+        entries.iter().map(|e| PathBuf::from(expand(e))).find(|d| d.join("spindle.exe").is_file())
+    }
+
+    pub fn is_on_path(dir: &Path) -> bool {
+        user_path().0.iter().any(|e| same_dir(e, dir))
+    }
+
+    pub fn set_on_path(on: bool, dir: &Path) -> Result<()> {
+        let (mut entries, expand_sz) = user_path();
+        let had = entries.iter().any(|e| same_dir(e, dir));
+        if on == had {
+            return Ok(());
+        }
+        if on {
+            // Store under %LOCALAPPDATA% when it's there, like Windows' own entries.
+            let shown = match std::env::var("LOCALAPPDATA") {
+                Ok(l) if dir.starts_with(&l) => {
+                    format!("%LOCALAPPDATA%{}", &dir.to_string_lossy()[l.len()..])
+                }
+                _ => dir.display().to_string(),
+            };
+            entries.push(shown);
+        } else {
+            entries.retain(|e| !same_dir(e, dir));
+        }
+        let value = entries.join(";");
+        let mut bytes: Vec<u8> = value.encode_utf16().chain(std::iter::once(0)).flat_map(u16::to_le_bytes).collect();
+        if bytes.is_empty() {
+            bytes = vec![0, 0];
+        }
+        let vtype = if expand_sz || value.contains('%') { winreg::enums::REG_EXPAND_SZ } else { winreg::enums::REG_SZ };
+        let (env, _) = hkcu().create_subkey("Environment")?;
+        env.set_raw_value("Path", &winreg::RegValue { bytes: bytes.into(), vtype }).context("writing the user Path")?;
+        // Tell Explorer (and so new terminals) the environment changed.
+        let what: Vec<u16> = "Environment".encode_utf16().chain(std::iter::once(0)).collect();
+        // SAFETY: documented broadcast with a NUL-terminated string and a timeout.
+        unsafe {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{HWND_BROADCAST, SMTO_ABORTIFHUNG, SendMessageTimeoutW, WM_SETTINGCHANGE};
+            let mut result = 0usize;
+            SendMessageTimeoutW(HWND_BROADCAST, WM_SETTINGCHANGE, 0, what.as_ptr() as isize, SMTO_ABORTIFHUNG, 5000, &mut result);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -217,6 +373,18 @@ mod imp {
     pub fn open_default_apps() -> bool {
         false
     }
+
+    pub fn path_dir() -> Option<PathBuf> {
+        super::linked_dir()
+    }
+
+    pub fn is_on_path(dir: &Path) -> bool {
+        super::linked_dir().as_deref() == Some(dir)
+    }
+
+    pub fn set_on_path(on: bool, dir: &Path) -> Result<()> {
+        super::set_links(on, dir)
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -277,6 +445,18 @@ mod imp {
 
     pub fn open_default_apps() -> bool {
         false
+    }
+
+    pub fn path_dir() -> Option<PathBuf> {
+        super::linked_dir()
+    }
+
+    pub fn is_on_path(dir: &Path) -> bool {
+        super::linked_dir().as_deref() == Some(dir)
+    }
+
+    pub fn set_on_path(on: bool, dir: &Path) -> Result<()> {
+        super::set_links(on, dir)
     }
 }
 

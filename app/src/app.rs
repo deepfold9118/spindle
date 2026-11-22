@@ -200,6 +200,8 @@ pub struct App {
     /// Desktop integration state (registry / autostart files), read on refresh.
     pub autostart: bool,
     pub opens_blend: bool,
+    /// This copy's folder is on PATH.
+    pub on_path: bool,
     /// A Spindle release newer than this one (from the daily check), and the restart flag
     /// an installed update sets.
     pub spindle_release: Option<spindle_core::selfupdate::Release>,
@@ -254,6 +256,7 @@ impl App {
             quitting: false,
             autostart: false,
             opens_blend: false,
+            on_path: false,
             spindle_release: None,
             restart_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
@@ -290,6 +293,7 @@ impl App {
         self.token_stored = superhive::has_token();
         self.autostart = spindle_core::desktop::autostart().is_some();
         self.opens_blend = spindle_core::desktop::blend_association().is_some();
+        self.on_path = own_dir().is_some_and(|d| spindle_core::desktop::is_on_path(&d));
         self.instances = instances::list(&self.sp).unwrap_or_default();
         self.reload_catalog(true);
         self.recheck_compat();
@@ -705,6 +709,24 @@ impl App {
         self.autostart = spindle_core::desktop::autostart().is_some();
     }
 
+    /// Put this copy's programs on PATH, or take them off.
+    pub fn toggle_path(&mut self, ctx: &egui::Context) {
+        let on = !self.on_path;
+        let Some(dir) = own_dir() else { return };
+        match spindle_core::desktop::set_on_path(on, &dir) {
+            Ok(()) if on => {
+                let note = match spindle_core::desktop::user_bin() {
+                    Some((bin, false)) if !cfg!(windows) => format!("; add {} to PATH in your shell profile", bin.display()),
+                    _ => String::new(),
+                };
+                self.toast(ctx, format!("spindle and spindle-mcp work in new terminals{note}"))
+            }
+            Ok(()) => self.toast(ctx, "Spindle is off PATH"),
+            Err(e) => self.toast(ctx, format!("Error: {e:#}")),
+        }
+        self.on_path = spindle_core::desktop::is_on_path(&dir);
+    }
+
     /// Offer (or stop offering) Spindle for opening .blend files.
     pub fn toggle_blend_association(&mut self, ctx: &egui::Context) {
         let on = !self.opens_blend;
@@ -1059,6 +1081,11 @@ fn update_checker(
         let _ = results.send(CheckResult { manual, outcome });
         ctx.request_repaint();
     }
+}
+
+/// The folder holding this Spindle's programs.
+fn own_dir() -> Option<PathBuf> {
+    std::env::current_exe().ok()?.parent().map(|p| p.to_path_buf())
 }
 
 fn prefs_path(sp: &Spindle) -> Option<PathBuf> {

@@ -95,9 +95,39 @@ profile; the API token stays in the OS credential store.
 
 ## Install
 
-Download the archive for your platform from the
-[latest release](https://github.com/deepfold9118/spindle/releases/latest), unpack it anywhere
-and run `spindle_app`. Each archive holds three programs:
+**Windows** (PowerShell):
+
+```powershell
+& ([scriptblock]::Create((irm https://github.com/deepfold9118/spindle/releases/latest/download/install.ps1)))
+```
+
+**Linux and macOS**:
+
+```sh
+curl -fsSL https://github.com/deepfold9118/spindle/releases/latest/download/install.sh | sh
+```
+
+The installer downloads the latest release, checks it against the release's `SHA256SUMS`,
+installs it for you alone (no administrator rights) and starts Spindle:
+
+| | Windows | Linux / macOS |
+|---|---|---|
+| Programs | `%LOCALAPPDATA%\Programs\Spindle` | `~/.local/share/spindle` |
+| Shortcut | Start menu | application menu (Linux) |
+| PATH | the folder is added to your user `Path` | links in `~/.local/bin` |
+| Options | `-StartAtSignIn` `-OpenBlendFiles` `-NoPath` `-Dir <folder>` | `--start-at-sign-in` `--no-path` `--dir <folder>` |
+| Uninstall | `& "$env:LOCALAPPDATA\Programs\Spindle\install.ps1" -Uninstall` | `sh ~/.local/share/spindle/install.sh --uninstall` |
+
+Running the installer again upgrades in place, and so does **Help > Spindle Updates** in the app
+(or `spindle self-update`). Uninstalling removes the programs, shortcut, PATH entry and
+registrations; your library, profiles and settings stay. Each release archive also carries the
+installer, so `install.ps1` / `install.sh` from an unpacked archive installs that release
+without downloading. Start at sign-in, opening `.blend` files and PATH can be switched later
+under **Customize Program**, or with `spindle desktop`.
+
+You can also just unpack an archive from the
+[latest release](https://github.com/deepfold9118/spindle/releases/latest) anywhere and run
+`spindle_app`. Each archive holds three programs:
 
 | Program | What it is |
 |---|---|
@@ -114,9 +144,6 @@ and run `spindle_app`. Each archive holds three programs:
   download quarantine once: `xattr -dr com.apple.quarantine <folder>`. Opening `.blend` files
   from Finder needs an app bundle, which isn't shipped yet; use `spindle open <file>`.
 
-Spindle updates itself: **Help > Spindle Updates** in the app, or `spindle self-update`. Every
-download is checked against the release's `SHA256SUMS`.
-
 ## Getting started
 
 1. Start `spindle_app`. Pick a library folder with `spindle set-library <dir>` if you don't
@@ -125,8 +152,8 @@ download is checked against the release's `SHA256SUMS`.
    with **Add Build…**.
 3. Launch it. The first launch sets up the `default` profile; every build you launch later uses
    the same one. Use **Launch with** in the toolbar for other profiles.
-4. Optional, under **Customize Program**: start Spindle when you sign in, and open `.blend`
-   files with Spindle.
+4. Optional, under **Customize Program**: start Spindle when you sign in, open `.blend`
+   files with Spindle, and add Spindle to PATH.
 
 ## Agents (MCP)
 
@@ -179,7 +206,7 @@ spindle launch [<build>] [--profile default] [--force] [-- blender args]
 spindle open <file.blend> [--build <build>] [--dry-run]
 spindle check <build> [--profile default] [--json]
 spindle instances [--json]
-spindle desktop [--autostart on|off] [--open-blend on|off]
+spindle desktop [--autostart on|off] [--open-blend on|off] [--path on|off]
 spindle self-update [--check]
 spindle superhive login | list | sync
 spindle addons list

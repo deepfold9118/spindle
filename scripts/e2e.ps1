@@ -21,6 +21,9 @@
    11. opening .blend files: plain and zstd-compressed files saved by two builds each open in
        the build of their series; `spindle_app file.blend` launches Blender with the file
    12. self-update: the newest GitHub release is readable (skipped before the first release)
+   13. PATH: the debug folder is added to the user Path and removed again, leaving the value
+       (and its REG_EXPAND_SZ type) exactly as it was; install.ps1 installs a copy of the debug
+       programs into a temporary folder, puts it on PATH and uninstalls it again
   Everything runs in a throwaway profile ("e2e-<random>") that is deleted at the end;
   the default profile is never touched. Downloading a whole build is not repeated here
   (400 MB each); run `spindle builds download <version>` to exercise it.
@@ -279,7 +282,7 @@ try {
 
     # --- 10. desktop integration (registry round trip) ------------------------
     $status = & $spindle desktop --app $appExe
-    if ($status -match ': on') {
+    if (($status | Select-Object -First 2) -match ': on') {
         Add-Result "desktop: register + unregister" $null "skipped: Spindle is registered already ($($status -join '; '))"
     } else {
         $on = & $spindle desktop --app $appExe --autostart on --open-blend on
@@ -338,6 +341,36 @@ try {
         Add-Result "self-update: newest release readable" $null "skipped: no release yet"
     } else {
         Add-Result "self-update: newest release readable" (($su -join ' ') -match 'newest:\s+\d') ($su -join '; ')
+    }
+
+    # --- 13. PATH and the install script --------------------------------------
+    $envKey = 'HKCU:\Environment'
+    $rawPath = { $k = Get-Item $envKey; "$($k.GetValueKind('Path'))|$($k.GetValue('Path', '', 'DoNotExpandEnvironmentNames'))" }
+    $pathBefore = & $rawPath
+    $debugDir = Split-Path $spindle -Parent
+    try {
+        & $spindle desktop --app $appExe --path on | Out-Null
+        $entries = ((Get-Item $envKey).GetValue('Path', '', 'DoNotExpandEnvironmentNames')) -split ';' | ForEach-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\') }
+        Add-Result "path: debug folder added to the user Path" ($entries -contains $debugDir)
+        & $spindle desktop --app $appExe --path off | Out-Null
+        Add-Result "path: removed, Path value and type unchanged" ((& $rawPath) -eq $pathBefore)
+
+        $pkg = Join-Path $env:TEMP "spindle-e2e-pkg-$testProfile"
+        # GetFullPath expands an 8.3 TEMP (GLASSW~1) the way install.ps1 does.
+        $dest = [IO.Path]::GetFullPath((Join-Path $env:TEMP "spindle-e2e-inst-$testProfile"))
+        $null = New-Item -ItemType Directory -Force $pkg
+        foreach ($b in "spindle", "spindle_app", "spindle-mcp") { Copy-Item (Join-Path $debugDir "$b.exe") $pkg }
+        Copy-Item (Join-Path $root "scripts\install.ps1"), (Join-Path $root "LICENSE") $pkg
+        & (Join-Path $pkg "install.ps1") -Dir $dest -NoShortcut -NoStart | Out-Null
+        $entries = ((Get-Item $envKey).GetValue('Path', '', 'DoNotExpandEnvironmentNames')) -split ';' | ForEach-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\') }
+        $v = & (Join-Path $dest "spindle.exe") --version
+        Add-Result "install.ps1: programs copied and on PATH" ((Test-Path (Join-Path $dest "install.ps1")) -and ($entries -contains $dest) -and $v) $v
+        & (Join-Path $dest "install.ps1") -Dir $dest -Uninstall | Out-Null
+        Add-Result "install.ps1 -Uninstall: folder and PATH entry gone" ((-not (Test-Path $dest)) -and ((& $rawPath) -eq $pathBefore))
+    } finally {
+        if ((& $rawPath) -ne $pathBefore) { & $spindle desktop --app $appExe --path off | Out-Null }
+        if ($pkg) { Remove-Item $pkg -Recurse -Force -ErrorAction SilentlyContinue }
+        if ($dest -and (Test-Path $dest)) { & (Join-Path $root "scripts\install.ps1") -Dir $dest -Uninstall | Out-Null }
     }
 } finally {
     if ($testProfileDir -and (Test-Path $testProfileDir)) { Remove-Item $testProfileDir -Recurse -Force }

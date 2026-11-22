@@ -63,6 +63,9 @@ enum Cmd {
         /// Offer Spindle for opening .blend files: on or off.
         #[arg(long, value_parser = parse_on_off)]
         open_blend: Option<bool>,
+        /// Put Spindle's programs on PATH (Windows: user Path; elsewhere: ~/.local/bin): on or off.
+        #[arg(long, value_parser = parse_on_off)]
+        path: Option<bool>,
         /// The Spindle app executable to register (default: spindle_app next to this program).
         #[arg(long)]
         app: Option<PathBuf>,
@@ -310,7 +313,7 @@ fn main() -> Result<()> {
             let pid = launch::launch(&sp, &build, &profile, &[file.to_string_lossy().into_owned()])?;
             println!("opened {} in {} with profile '{}' (pid {pid})", file.display(), build.name, profile.name);
         }
-        Cmd::Desktop { autostart, open_blend, app } => {
+        Cmd::Desktop { autostart, open_blend, path, app } => {
             let app = match app {
                 Some(a) if a.is_file() => std::path::absolute(&a)?,
                 Some(a) => bail!("{} not found", a.display()),
@@ -322,9 +325,17 @@ fn main() -> Result<()> {
             if let Some(on) = open_blend {
                 desktop::set_blend_association(on, &app)?;
             }
+            if let Some(on) = path {
+                desktop::set_on_path(on, app.parent().context("no folder for the app")?)?;
+            }
             let show = |p: Option<PathBuf>| p.map(|p| format!("on ({})", p.display())).unwrap_or("off".into());
             println!("start at sign-in:  {}", show(desktop::autostart()));
             println!("open .blend files: {}", show(desktop::blend_association()));
+            println!("on PATH:           {}", show(desktop::path_dir()));
+            #[cfg(not(windows))]
+            if let Some((bin, false)) = desktop::user_bin().filter(|_| desktop::path_dir().is_some()) {
+                println!("note: {} isn't on your PATH yet; add it in your shell profile", bin.display());
+            }
         }
         Cmd::SelfUpdate { check, force } => {
             use spindle_core::selfupdate;

@@ -45,6 +45,13 @@ jobs:
             cp "target/${{ matrix.target }}/release/$b$ext" "dist/$name/"
           done
           cp LICENSE NOTICE THIRD-PARTY-LICENSES.html README.md "dist/$name/"
+          if [[ -n "$ext" ]]; then
+            cp scripts/install.ps1 "dist/$name/"
+          else
+            cp scripts/install.sh "dist/$name/"
+            cp artwork/spindle_symbol.svg "dist/$name/spindle.svg"
+            chmod +x "dist/$name/install.sh"
+          fi
           cd dist
           if [[ -n "$ext" ]]; then
             7z a -tzip "$name.zip" "$name" > /dev/null
@@ -70,7 +77,9 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Checksums
-        run: cd dist && sha256sum spindle-* > SHA256SUMS && cat SHA256SUMS
+        run: |
+          cp scripts/install.ps1 scripts/install.sh dist/
+          cd dist && sha256sum spindle-* install.* > SHA256SUMS && cat SHA256SUMS
       - name: Release notes
         run: |
           version="${GITHUB_REF_NAME#v}"
