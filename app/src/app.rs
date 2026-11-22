@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use spindle_core::addons::{AddonLibrary, AddonRecord};
 pub use spindle_core::builds::Channel;
 use spindle_core::builds::{self, Build};
+use spindle_core::selfupdate;
 use spindle_core::compat::{self, Report};
 use spindle_core::downloads::{self, Available, Catalog, Progress, Update};
 use spindle_core::instances::{self, Instance};
@@ -115,6 +116,23 @@ pub fn launch_profile(sp: &Spindle) -> String {
     LAUNCH_PROFILE.lock().ok().and_then(|p| p.clone()).unwrap_or_else(|| sp.profile_name(None))
 }
 
+/// Launch a build without the window (from the tray). False when the app should handle it
+/// instead: the profile check has something to say, or the launch failed.
+#[cfg_attr(windows, allow(dead_code))]
+pub fn launch_quietly(name: &str) -> bool {
+    (|| -> anyhow::Result<bool> {
+        let sp = Spindle::load()?;
+        let build = builds::find(&sp, name)?;
+        let profile = spindle_core::profile::Profile::open(&sp, &launch_profile(&sp))?;
+        if compat::check(&build, &profile.name, &profile.root).needs_attention() {
+            return Ok(false);
+        }
+        spindle_core::launch::launch(&sp, &build, &profile, &[])?;
+        Ok(true)
+    })()
+    .unwrap_or(false)
+}
+
 /// Result of one update check, from the checker thread.
 pub struct CheckResult {
     pub manual: bool,
@@ -132,6 +150,8 @@ pub struct Dialogs {
     pub compat: Option<CompatDialog>,
     /// Remove-build confirmation, by build name.
     pub remove: Option<String>,
+    /// "Spindle updates" dialog.
+    pub self_update: bool,
 }
 
 pub struct App {
@@ -173,12 +193,17 @@ pub struct App {
     pub compat: HashMap<String, Report>,
     compat_profile: String,
 
-    #[cfg(windows)]
     pub tray: Option<crate::tray::Tray>,
-    #[cfg(windows)]
     tray_rx: Option<Receiver<crate::tray::TrayEvent>>,
     pub main_hwnd: Option<isize>,
     pub quitting: bool,
+    /// Desktop integration state (registry / autostart files), read on refresh.
+    pub autostart: bool,
+    pub opens_blend: bool,
+    /// A Spindle release newer than this one (from the daily check), and the restart flag
+    /// an installed update sets.
+    pub spindle_release: Option<spindle_core::selfupdate::Release>,
+    restart_pending: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl App {
@@ -223,15 +248,22 @@ impl App {
             check_rx: None,
             compat: HashMap::new(),
             compat_profile: String::new(),
-            #[cfg(windows)]
             tray: None,
-            #[cfg(windows)]
             tray_rx: None,
             main_hwnd: window_handle(cc),
             quitting: false,
+            autostart: false,
+            opens_blend: false,
+            spindle_release: None,
+            restart_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         if app.screenshot.is_none() {
             app.start_background(&cc.egui_ctx);
+            // Keep sign-in and .blend registrations pointing at this executable.
+            if let Ok(exe) = std::env::current_exe() {
+                spindle_core::desktop::refresh(&exe);
+            }
+            spindle_core::selfupdate::cleanup();
         }
         app.refresh();
         if let Some(b) = app.builds.first() {
@@ -256,15 +288,19 @@ impl App {
             self.active_profile = self.sp.profile_name(None);
         }
         self.token_stored = superhive::has_token();
+        self.autostart = spindle_core::desktop::autostart().is_some();
+        self.opens_blend = spindle_core::desktop::blend_association().is_some();
         self.instances = instances::list(&self.sp).unwrap_or_default();
         self.reload_catalog(true);
         self.recheck_compat();
-        #[cfg(windows)]
         if let Some(t) = &self.tray {
             t.set_builds(
                 self.builds
                     .iter()
-                    .map(|b| (b.name.clone(), format!("Blender {} ({})", b.version.as_deref().unwrap_or(&b.name), b.channel.label())))
+                    .map(|b| {
+                        let star = if b.favourite { "\u{2605} " } else { "" };
+                        (b.name.clone(), format!("{star}Blender {} ({})", b.version.as_deref().unwrap_or(&b.name), b.channel.label()))
+                    })
                     .collect(),
             );
         }
@@ -293,25 +329,21 @@ impl App {
 
     /// Tray icon and the update checker (not in screenshot runs).
     fn start_background(&mut self, ctx: &egui::Context) {
-        #[cfg(windows)]
-        if let Some(hwnd) = self.main_hwnd {
+        // Windows hosts the tray on its own thread and needs the window handle to show and
+        // hide the window; elsewhere the icon lives on this (main) thread.
+        let main = if cfg!(windows) { self.main_hwnd } else { Some(0) };
+        if let Some(hwnd) = main {
             let (tx, rx) = channel();
             self.tray = crate::tray::Tray::start(hwnd, ctx.clone(), tx);
             self.tray_rx = Some(rx);
         }
         let (trigger, trigger_rx) = channel::<bool>();
         let (result_tx, result_rx) = channel();
-        #[cfg(windows)]
         let tray = self.tray.clone();
         let ctx = ctx.clone();
         std::thread::Builder::new()
             .name("spindle-updates".into())
-            .spawn(move || {
-                #[cfg(windows)]
-                update_checker(ctx, trigger_rx, result_tx, tray);
-                #[cfg(not(windows))]
-                update_checker(ctx, trigger_rx, result_tx);
-            })
+            .spawn(move || update_checker(ctx, trigger_rx, result_tx, tray))
             .ok();
         self.checker = Some(trigger);
         self.check_rx = Some(result_rx);
@@ -339,7 +371,10 @@ impl App {
             self.last_poll = now;
             self.instances = instances::list(&self.sp).unwrap_or_default();
             self.reload_catalog(false);
-            #[cfg(windows)]
+            self.spindle_release = selfupdate::cached(&self.sp).filter(selfupdate::is_newer);
+            if self.restart_pending.load(std::sync::atomic::Ordering::Relaxed) {
+                self.restart_after_update(ctx);
+            }
             if let Some(t) = &self.tray {
                 let mut tip = format!("Spindle · {} running", self.instances.len());
                 if !self.updates.is_empty() {
@@ -371,7 +406,10 @@ impl App {
                 }
             }
         }
-        #[cfg(windows)]
+        #[cfg(not(windows))]
+        if let Some(t) = &self.tray {
+            t.pump();
+        }
         self.handle_tray(ctx);
         ctx.request_repaint_after(Duration::from_millis(if self.jobs.is_empty() { 2000 } else { 150 }));
 
@@ -604,10 +642,98 @@ impl App {
         }
     }
 
-    pub fn launch_newest(&mut self, ctx: &egui::Context) {
+    /// Launch the default build: the first favourite, else the newest (builds are listed that way).
+    pub fn launch_default(&mut self, ctx: &egui::Context) {
         if let Some(name) = self.builds.first().map(|b| b.name.clone()) {
             self.launch_build(ctx, &name);
         }
+    }
+
+    /// Ask GitHub for the newest Spindle release (Help > Check for Spindle Updates).
+    pub fn check_spindle_release(&mut self) {
+        self.spawn("Checking for Spindle updates", move || {
+            let sp = Spindle::load().map_err(|e| format!("{e:#}"))?;
+            let r = selfupdate::latest().map_err(|e| format!("{e:#}"))?;
+            selfupdate::store(&sp, &r);
+            Ok(if selfupdate::is_newer(&r) {
+                format!("Spindle {} is available (this is {})", r.version, selfupdate::CURRENT)
+            } else {
+                format!("Spindle {} is the newest version", selfupdate::CURRENT)
+            })
+        });
+    }
+
+    /// Download and install the newer release, then restart into it.
+    pub fn install_spindle_update(&mut self, ctx: &egui::Context) {
+        let Some(release) = self.spindle_release.clone() else { return };
+        let dir = match selfupdate::install_dir() {
+            Ok(d) => d,
+            Err(e) => return self.toast(ctx, format!("Error: {e:#}")),
+        };
+        let restart = self.restart_pending.clone();
+        self.toast(ctx, format!("Downloading Spindle {}…", release.version));
+        self.spawn("Updating Spindle", move || {
+            let sp = Spindle::load().map_err(|e| format!("{e:#}"))?;
+            selfupdate::install(&sp, &release, &dir, |_, _| {}).map_err(|e| format!("{e:#}"))?;
+            restart.store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(format!("Spindle {} installed; restarting", release.version))
+        });
+    }
+
+    /// Start the freshly installed Spindle (it waits for this one to exit) and quit.
+    fn restart_after_update(&mut self, ctx: &egui::Context) {
+        self.restart_pending.store(false, std::sync::atomic::Ordering::Relaxed);
+        let started = std::env::current_exe().and_then(|exe| {
+            std::process::Command::new(exe).arg("--after-update").arg(std::process::id().to_string()).spawn()
+        });
+        match started {
+            Ok(_) => self.quit(ctx),
+            Err(e) => self.toast(ctx, format!("Updated; restart Spindle to use it ({e})")),
+        }
+    }
+
+    /// Turn starting Spindle (in the tray) at sign-in on or off.
+    pub fn toggle_autostart(&mut self, ctx: &egui::Context) {
+        let on = !self.autostart;
+        let result = std::env::current_exe()
+            .map_err(anyhow::Error::from)
+            .and_then(|exe| spindle_core::desktop::set_autostart(on, &exe));
+        match result {
+            Ok(()) => self.toast(ctx, if on { "Spindle will start in the tray when you sign in" } else { "Spindle won't start when you sign in" }),
+            Err(e) => self.toast(ctx, format!("Couldn't change starting at sign-in: {e:#}")),
+        }
+        self.autostart = spindle_core::desktop::autostart().is_some();
+    }
+
+    /// Offer (or stop offering) Spindle for opening .blend files.
+    pub fn toggle_blend_association(&mut self, ctx: &egui::Context) {
+        let on = !self.opens_blend;
+        let result = std::env::current_exe()
+            .map_err(anyhow::Error::from)
+            .and_then(|exe| spindle_core::desktop::set_blend_association(on, &exe));
+        match result {
+            Ok(()) if on && cfg!(windows) => {
+                self.toast(ctx, "Spindle is offered under Open with for .blend files; use Choose Default App to make it the default")
+            }
+            Ok(()) if on => self.toast(ctx, "Spindle now opens .blend files"),
+            Ok(()) => self.toast(ctx, "Spindle no longer opens .blend files"),
+            Err(e) => self.toast(ctx, format!("{e:#}")),
+        }
+        self.opens_blend = spindle_core::desktop::blend_association().is_some();
+    }
+
+    /// Star or unstar a build; favourites come first in every list and in the tray menu.
+    pub fn toggle_favourite(&mut self, name: &str) {
+        let on = !self.builds.iter().any(|b| b.name == name && b.favourite);
+        if let Err(e) = builds::set_favourite(&mut self.sp, name, on) {
+            self.load_error = Some(format!("{e:#}"));
+        }
+        self.refresh();
+    }
+
+    /// Label of the default build for menus ("Blender 5.3.0").
+    pub fn default_label(&self) -> Option<String> {
+        self.builds.first().map(|b| format!("Blender {}", b.version.clone().unwrap_or(b.name.clone())))
     }
 
     /// Download and install a build in the background.
@@ -654,10 +780,21 @@ impl App {
     }
 
     /// Hide to the notification area (when the tray is running).
-    pub fn hide_to_tray(&mut self) -> bool {
+    pub fn hide_to_tray(&mut self, _ctx: &egui::Context) -> bool {
         #[cfg(windows)]
-        if let (Some(t), Some(hwnd)) = (&self.tray, self.main_hwnd) {
-            crate::tray::hide_main(hwnd);
+        let hidden = match (&self.tray, self.main_hwnd) {
+            (Some(_), Some(hwnd)) => {
+                crate::tray::hide_main(hwnd);
+                true
+            }
+            _ => false,
+        };
+        #[cfg(not(windows))]
+        let hidden = self.tray.is_some() && {
+            crate::tray::hide_main(_ctx);
+            true
+        };
+        if let (true, Some(t)) = (hidden, &self.tray) {
             if !self.prefs.tray_hint_shown {
                 t.notify(
                     "Spindle is still running",
@@ -683,7 +820,6 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
-    #[cfg(windows)]
     fn handle_tray(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.tray_rx else { return };
         let events: Vec<crate::tray::TrayEvent> = rx.try_iter().collect();
@@ -828,7 +964,6 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
-        #[cfg(windows)]
         if let Some(t) = &self.tray {
             t.shutdown();
         }
@@ -850,7 +985,7 @@ fn update_checker(
     ctx: egui::Context,
     trigger: Receiver<bool>,
     results: Sender<CheckResult>,
-    #[cfg(windows)] tray: Option<crate::tray::Tray>,
+    tray: Option<crate::tray::Tray>,
 ) {
     const EVERY: Duration = Duration::from_secs(6 * 3600);
     let age = Spindle::load().ok().and_then(|sp| downloads::cached(&sp)).map(|c| c.age_secs().max(0) as u64);
@@ -876,7 +1011,24 @@ fn update_checker(
             let mut seen: Vec<String> =
                 std::fs::read(&seen_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
             let fresh: Vec<&Update> = ups.iter().filter(|u| !seen.contains(&u.available.name)).collect();
-            #[cfg(windows)]
+            // Spindle itself: once a day (or on a manual check), announced once per version.
+            let day_old = selfupdate::cached(&sp).is_none_or(|r| {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+                now - r.fetched > 24 * 3600
+            });
+            if manual || day_old {
+                if let Ok(r) = selfupdate::latest() {
+                    selfupdate::store(&sp, &r);
+                    let key = format!("spindle-{}", r.version);
+                    if selfupdate::is_newer(&r) && !seen.contains(&key) {
+                        if let Some(t) = &tray {
+                            t.notify(&format!("Spindle {} is available", r.version), "Open Spindle and choose Help > Spindle Updates to install it.", false);
+                        }
+                        seen.push(key);
+                        let _ = std::fs::write(&seen_path, serde_json::to_vec(&seen).unwrap_or_default());
+                    }
+                }
+            }
             if let Some(t) = &tray {
                 match fresh.as_slice() {
                     [] if manual => t.notify(

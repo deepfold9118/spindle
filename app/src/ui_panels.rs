@@ -173,13 +173,13 @@ fn tasks(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     ui.spacing_mut().item_spacing.y = 1.0;
     section(ui, &pal, "sec_common", "Common Tasks", true, |ui| {
-        let newest = app.builds.first().map(|b| b.version.clone().unwrap_or(b.name.clone()));
+        let newest = app.default_label();
         let label = match &newest {
-            Some(v) => format!("Launch Blender {v}"),
-            None => "Launch Newest Build".into(),
+            Some(v) => format!("Launch {v}"),
+            None => "Launch Default Build".into(),
         };
         if task_row(ui, &pal, I::PLAY, Some(if newest.is_some() { pal.green } else { pal.faint }), &label, newest.is_some()).clicked() {
-            app.launch_newest(&ctx);
+            app.launch_default(&ctx);
         }
         if task_row(ui, &pal, I::ACTIVITY, None, "Show Running Blenders", true).clicked() {
             app.set_view(View::Running);
@@ -215,6 +215,11 @@ fn tasks(app: &mut App, ui: &mut egui::Ui) {
                 }
                 if task_row(ui, &pal, I::ACTIVITY, None, &format!("Show Running Instances ({running})"), running > 0).clicked() {
                     app.set_view(View::Running);
+                }
+                let fav = app.selected_build().is_some_and(|b| b.favourite);
+                let fav_label = if fav { "Remove from Favourites" } else { "Add to Favourites" };
+                if task_row(ui, &pal, I::STAR, Some(if fav { pal.accent } else { pal.muted }), fav_label, true).clicked() {
+                    app.toggle_favourite(&name);
                 }
                 if task_row(ui, &pal, I::FOLDER_OPEN, None, "Open Build Folder", exe_dir.is_some()).clicked() {
                     if let Some(d) = &exe_dir {
@@ -343,6 +348,32 @@ fn tasks(app: &mut App, ui: &mut egui::Ui) {
         {
             app.prefs.close_to_tray = !app.prefs.close_to_tray;
             app.prefs_dirty = true;
+        }
+        let check = |on: bool| if on { I::CIRCLE_CHECK } else { I::CIRCLE };
+        if task_row(ui, &pal, check(app.autostart), None, "Start Spindle When I Sign In", true)
+            .on_hover_text("Starts Spindle hidden in the tray, where it launches builds and watches for new ones")
+            .clicked()
+        {
+            app.toggle_autostart(&ctx);
+        }
+        let can_associate = !cfg!(target_os = "macos");
+        if task_row(ui, &pal, check(app.opens_blend), None, "Open .blend Files with Spindle", can_associate)
+            .on_hover_text(if can_associate {
+                "Spindle opens each file in the build that saved it (or the default build), after checking the profile"
+            } else {
+                "On macOS, file types come from app bundles; use `spindle open <file>` instead"
+            })
+            .clicked()
+        {
+            app.toggle_blend_association(&ctx);
+        }
+        if cfg!(windows) && app.opens_blend {
+            if task_row(ui, &pal, I::FILE_BOX, None, "Choose Default App for .blend…", true)
+                .on_hover_text("Windows asks you to pick the default app yourself: choose Spindle for .blend")
+                .clicked()
+            {
+                spindle_core::desktop::open_default_apps();
+            }
         }
     });
 

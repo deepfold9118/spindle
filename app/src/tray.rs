@@ -395,3 +395,14 @@ fn launch_from_tray(hwnd: HWND, name: &str) {
         Err(e) => balloon("Couldn't launch", e),
     }
 }
+
+/// Wait (up to `secs`) until no other Spindle's tray window exists, e.g. the one that
+/// just installed an update and is quitting.
+pub fn wait_for_exit(secs: u64) {
+    let class = wide(CLASS);
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    // SAFETY: FindWindowW with a NUL-terminated class name.
+    while unsafe { !FindWindowW(class.as_ptr(), std::ptr::null()).is_null() } && std::time::Instant::now() < until {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+}

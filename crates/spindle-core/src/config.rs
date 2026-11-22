@@ -17,6 +17,8 @@ pub struct Config {
     pub default_profile: Option<String>,
     /// Builds that live outside the library: name -> Blender executable.
     pub builds: BTreeMap<String, PathBuf>,
+    /// Starred builds, listed first everywhere; the first one is the default build to launch.
+    pub favourites: Vec<String>,
     pub superhive: SuperhiveConfig,
     pub downloads: DownloadsConfig,
 }

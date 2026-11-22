@@ -105,8 +105,7 @@ pub fn build_python(build: &Build) -> Option<(u32, u32)> {
             }
         }
     }
-    let series = build.series()?;
-    let lib = root.join(fmt(series)).join("python").join("lib");
+    let lib = crate::builds::data_folder(root)?.join("python").join("lib");
     fs::read_dir(lib).ok()?.filter_map(|e| e.ok()).find_map(|e| {
         let n = e.file_name().to_string_lossy().into_owned();
         builds::parse_series(n.strip_prefix("python")?)

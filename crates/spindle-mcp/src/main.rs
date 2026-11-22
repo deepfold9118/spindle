@@ -87,12 +87,12 @@ fn tools() -> Value {
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "build": { "type": "string", "description": "Build name or version, e.g. \"5.3\"" },
+                    "build": { "type": "string", "description": "Build name or version, e.g. \"5.3\". Omit for the default build (first favourite, else newest), or, with `file`, the build that suits the file." },
                     "profile": { "type": "string", "description": "Profile name (default profile if omitted)" },
                     "file": { "type": "string", "description": "Optional .blend file to open" },
                     "force": { "type": "boolean", "description": "Launch even when this build can't read the profile (older builds); off by default" }
                 },
-                "required": ["build"]
+                "required": []
             }
         }
     ])
@@ -104,9 +104,22 @@ fn call(name: &str, args: &Value) -> Result<Value> {
         "list_running_blenders" => Ok(json!({ "instances": instances::list(&sp)? })),
         "list_builds" => Ok(json!({ "builds": builds::list(&sp)? })),
         "launch_blender" => {
-            let query = args.get("build").and_then(Value::as_str).unwrap_or_default();
-            let build = builds::find(&sp, query)?;
+            let file = args.get("file").and_then(Value::as_str).filter(|f| !f.is_empty());
+            let mut warnings: Vec<String> = Vec::new();
             let profile = Profile::open(&sp, &sp.profile_name(args.get("profile").and_then(Value::as_str)))?;
+            let build = match (args.get("build").and_then(Value::as_str).filter(|q| !q.is_empty()), file) {
+                (Some(q), _) => builds::find(&sp, q)?,
+                // A file and no build: the build that suits the file (the series that saved it).
+                (None, Some(f)) => {
+                    let usable = |b: &builds::Build| {
+                        compat::check(b, &profile.name, &profile.root).worst() != Some(compat::Severity::Blocker)
+                    };
+                    let c = spindle_core::blendfile::choose_build(&sp, std::path::Path::new(f), usable)?;
+                    warnings.extend(c.warning);
+                    c.build
+                }
+                (None, None) => builds::default_build(&sp)?,
+            };
             let extra: Vec<String> = args.get("file").and_then(Value::as_str).map(|f| vec![f.to_owned()]).unwrap_or_default();
             let report = compat::check(&build, &profile.name, &profile.root);
             let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
@@ -121,9 +134,10 @@ fn call(name: &str, args: &Value) -> Result<Value> {
                 );
             }
             let pid = launch::launch(&sp, &build, &profile, &extra)?;
-            let warnings: Vec<&compat::Issue> =
+            let issues: Vec<&compat::Issue> =
                 report.issues.iter().filter(|i| i.severity >= compat::Severity::Warning).collect();
-            Ok(json!({ "pid": pid, "build": build.name, "profile": profile.name, "compatibility_warnings": warnings }))
+            Ok(json!({ "pid": pid, "build": build.name, "profile": profile.name,
+                "compatibility_warnings": issues, "file_warnings": warnings }))
         }
         _ => anyhow::bail!("unknown tool: {name}"),
     }

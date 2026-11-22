@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Spindle third-party licences</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; max-width: 960px; margin: 2em auto; padding: 0 1em; color: #222; }
+  h1 { font-size: 1.5em; } h2 { font-size: 1.15em; margin-top: 2em; border-top: 1px solid #ddd; padding-top: 1em; }
+  pre { white-space: pre-wrap; background: #f6f6f6; padding: 1em; font-size: 12px; }
+  ul.crates { columns: 2; }
+</style>
+</head>
+<body>
+<h1>Third-party licences</h1>
+<p>Spindle is licensed under the Apache License 2.0. The binaries include the Rust crates below,
+used under the licences shown. The Inter typeface (SIL OFL 1.1) and the Lucide icons (ISC) are listed in NOTICE.</p>
+<h2>Overview</h2>
+<ul>
+{{#each overview}}
+  <li><a href="#{{id}}">{{name}}</a> ({{count}})</li>
+{{/each}}
+</ul>
+{{#each licenses}}
+<h2 id="{{id}}">{{name}}</h2>
+<p>Used by:</p>
+<ul class="crates">
+{{#each used_by}}
+  <li><a href="{{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}">{{crate.name}} {{crate.version}}</a></li>
+{{/each}}
+</ul>
+<pre>{{text}}</pre>
+{{/each}}
+</body>
+</html>

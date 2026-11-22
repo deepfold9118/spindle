@@ -3,13 +3,16 @@
 //! downloads and profile compatibility checks.
 
 pub mod addons;
+pub mod blendfile;
 pub mod builds;
 pub mod compat;
 pub mod config;
+pub mod desktop;
 pub mod downloads;
 pub mod instances;
 pub mod launch;
 pub mod profile;
+pub mod selfupdate;
 pub mod superhive;
 pub mod version;
 

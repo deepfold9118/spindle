@@ -3,9 +3,13 @@
 mod app;
 mod icons;
 mod logo;
+mod open_file;
 mod platform;
 mod theme;
 #[cfg(windows)]
+mod tray;
+#[cfg(not(windows))]
+#[path = "tray_xplat.rs"]
 mod tray;
 mod ui_center;
 mod ui_dialogs;
@@ -56,12 +60,25 @@ fn main() -> eframe::Result {
         i += 2;
     }
 
+    // Opened with a .blend file (file manager, "Open with"): launch it and exit.
+    if screenshot.is_none() {
+        if let Some(file) = open_file::blend_arg(&args) {
+            open_file::open(&file);
+            return Ok(());
+        }
+    }
+
     // One Spindle at a time: a second start brings the running one forward.
     // `--quit` asks a running Spindle to exit (for installers and updaters).
     #[cfg(windows)]
     if args.iter().any(|a| a == "--quit") {
         tray::signal_existing(tray::WM_QUIT_APP);
         return Ok(());
+    }
+    // Started by an update that's still quitting: let it go first.
+    #[cfg(windows)]
+    if args.iter().any(|a| a == "--after-update") {
+        tray::wait_for_exit(20);
     }
     #[cfg(windows)]
     if screenshot.is_none() && tray::signal_existing(tray::WM_SHOW_MAIN) {
@@ -133,7 +150,7 @@ impl eframe::App for app::App {
             && !self.quitting
             && self.prefs.close_to_tray
             && self.screenshot.is_none()
-            && self.hide_to_tray()
+            && self.hide_to_tray(&ctx)
         {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
         }

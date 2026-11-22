@@ -15,6 +15,12 @@
     7. removal: an external build is unregistered and its files are left alone
     8. tray: close hides to the tray, the tray shows it again, a second start hands over,
        `--quit` exits (skipped while a Spindle is already running)
+    9. favourites: a starred build is listed first and is the default build; unstarred after
+   10. desktop integration: start at sign-in and the .blend "Open with" registration are written
+       and removed again (skipped if Spindle is already registered, so a real setup isn't undone)
+   11. opening .blend files: plain and zstd-compressed files saved by two builds each open in
+       the build of their series; `spindle_app file.blend` launches Blender with the file
+   12. self-update: the newest GitHub release is readable (skipped before the first release)
   Everything runs in a throwaway profile ("e2e-<random>") that is deleted at the end;
   the default profile is never touched. Downloading a whole build is not repeated here
   (400 MB each); run `spindle builds download <version>` to exercise it.
@@ -254,6 +260,85 @@ try {
         & $appExe --quit
         Add-Result "tray: --quit exits and removes the icon" ($app.WaitForExit(15000) -and (Find-Tray) -eq [IntPtr]::Zero)
     }
+
+    # --- 9. favourites -------------------------------------------------------
+    $before = & $spindle builds list --json | ConvertFrom-Json
+    $pick = $before | Where-Object { -not $_.favourite } | Select-Object -Last 1
+    if ($pick) {
+        & $spindle builds favourite $pick.name | Out-Null
+        $after = & $spindle builds list --json | ConvertFrom-Json
+        $favs = @($before | Where-Object favourite)
+        # Favourites keep their order; a newly starred build goes after the existing ones.
+        Add-Result "favourite: listed with favourites first" (($after[$favs.Count].name -eq $pick.name) -and $after[$favs.Count].favourite) $pick.name
+        $dry = (& $spindle builds list | Select-Object -First 1)
+        Add-Result "favourite: marked in the list" ($dry -match '^\*' -or $favs.Count -gt 0) $dry
+        & $spindle builds favourite $pick.name --remove | Out-Null
+        $restored = & $spindle builds list --json | ConvertFrom-Json
+        Add-Result "favourite: unstarred again" (-not ($restored | Where-Object { $_.name -eq $pick.name }).favourite)
+    }
+
+    # --- 10. desktop integration (registry round trip) ------------------------
+    $status = & $spindle desktop --app $appExe
+    if ($status -match ': on') {
+        Add-Result "desktop: register + unregister" $null "skipped: Spindle is registered already ($($status -join '; '))"
+    } else {
+        $on = & $spindle desktop --app $appExe --autostart on --open-blend on
+        $run = (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue).Spindle
+        $open = (Get-ItemProperty 'HKCU:\Software\Classes\Spindle.blend\shell\open\command' -ErrorAction SilentlyContinue).'(default)'
+        Add-Result "desktop: start at sign-in written" ($run -eq "`"$appExe`" --tray") $run
+        Add-Result "desktop: .blend Open with written" ($open -eq "`"$appExe`" `"%1`"") $open
+        $off = & $spindle desktop --app $appExe --autostart off --open-blend off
+        $gone = -not (Test-Path 'HKCU:\Software\Classes\Spindle.blend') -and -not (Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name Spindle -ErrorAction SilentlyContinue)
+        Add-Result "desktop: removed again" ($gone -and ($off -join ' ') -notmatch ': on')
+    }
+
+    # --- 11. opening .blend files ---------------------------------------------
+    $blendDir = Join-Path $env:TEMP "spindle-e2e-blends-$testProfile"
+    $null = New-Item -ItemType Directory -Force $blendDir
+    try {
+        # The newest and the oldest build save a file each.
+        $bySeries = $builds | Sort-Object { Get-Series $_.version }
+        $savers = @($bySeries[-1], $bySeries[0]) | Sort-Object name -Unique
+        foreach ($b in $savers) {
+            $tag = Get-Series $b.version
+            $plain = (Join-Path $blendDir "saved-$tag.blend").Replace('\', '/')
+            $packed = (Join-Path $blendDir "saved-$tag-zstd.blend").Replace('\', '/')
+            $null = Invoke-BlenderPython $b $testProfileDir "import bpy`nbpy.ops.wm.save_as_mainfile(filepath='$plain')`nbpy.ops.wm.save_as_mainfile(filepath='$packed', compress=True)"
+            # A build the profile blocks (older than its preferences) hands the file to a newer one.
+            $blocked = @((& $spindle check $b.name --profile $testProfile --json | ConvertFrom-Json).issues | Where-Object severity -eq 'blocker').Count -gt 0
+            foreach ($f in @($plain, $packed)) {
+                $out = & $spindle open $f --profile $testProfile --dry-run 2>&1
+                $chosen = ([regex]::Match(($out -join "`n"), 'would open in (\S+)')).Groups[1].Value
+                $series = Get-Series (($builds | Where-Object name -eq $chosen).version)
+                $want = if ($blocked) { $series -gt (Get-Series $b.version) } else { $series -eq (Get-Series $b.version) }
+                $what = if ($blocked) { "a newer build (its own is blocked by the profile)" } else { "build of its series" }
+                Add-Result "open: $(Split-Path $f -Leaf) -> $what" $want $chosen
+            }
+        }
+        if (-not $SkipLaunch) {
+            # The app opens a file in the build that saved it and exits without a window.
+            $f = Get-ChildItem $blendDir -Filter 'saved-*.blend' | Where-Object Name -notmatch 'zstd' | Select-Object -First 1
+            $app = Start-Process $appExe -ArgumentList "`"$($f.FullName)`"" -PassThru
+            $exited = $app.WaitForExit(20000)
+            $deadline = (Get-Date).AddSeconds($HeartbeatTimeout)
+            do {
+                Start-Sleep -Seconds 2
+                $inst = & $spindle instances --json | ConvertFrom-Json | Where-Object { $_.file -like "*$($f.Name)" }
+            } while (-not $inst -and (Get-Date) -lt $deadline)
+            Add-Result "open: spindle_app file.blend launches it" ($exited -and [bool]$inst) "Blender $($inst.blender_version), $($inst.file)"
+            if ($inst) { Stop-Process -Id $inst.pid -Force -ErrorAction SilentlyContinue }
+        }
+    } finally {
+        Remove-Item $blendDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # --- 12. self-update ------------------------------------------------------
+    $su = & $spindle self-update --check 2>&1
+    if (($su -join ' ') -match 'no Spindle release published yet') {
+        Add-Result "self-update: newest release readable" $null "skipped: no release yet"
+    } else {
+        Add-Result "self-update: newest release readable" (($su -join ' ') -match 'newest:\s+\d') ($su -join '; ')
+    }
 } finally {
     if ($testProfileDir -and (Test-Path $testProfileDir)) { Remove-Item $testProfileDir -Recurse -Force }
     Pop-Location
@@ -263,3 +348,4 @@ $results | Format-Table -AutoSize | Out-Host
 $failed = @($results | Where-Object Result -eq "FAIL").Count
 if ($failed) { Write-Host "$failed check(s) failed" -ForegroundColor Red; exit 1 }
 Write-Host "all checks passed" -ForegroundColor Green
+exit 0

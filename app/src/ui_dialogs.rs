@@ -12,6 +12,85 @@ pub fn dialogs(app: &mut App, ctx: &egui::Context) {
     about(app, ctx);
     compat(app, ctx);
     remove(app, ctx);
+    self_update(app, ctx);
+}
+
+/// Help > Spindle Updates: the newest release, and Install and Restart.
+fn self_update(app: &mut App, ctx: &egui::Context) {
+    if !app.dlg.self_update {
+        return;
+    }
+    let pal = app.pal;
+    let mut close = false;
+    let mut install = false;
+    let mut check = false;
+    let checking = app.busy("Checking for Spindle updates");
+    let updating = app.busy("Updating Spindle");
+    let current = spindle_core::selfupdate::CURRENT;
+    let latest = spindle_core::selfupdate::cached(&app.sp);
+    let dir = spindle_core::selfupdate::install_dir();
+    egui::Modal::new(egui::Id::new("m_selfupdate")).show(ctx, |ui| {
+        ui.set_width(460.0);
+        ui.label(egui::RichText::new("Spindle Updates").font(bold(15.0)));
+        ui.add_space(6.0);
+        kv_line(ui, &pal, "This version", current);
+        match &latest {
+            Some(r) => kv_line(ui, &pal, "Newest release", &r.version),
+            None if checking => kv_line(ui, &pal, "Newest release", "checking…"),
+            None => kv_line(ui, &pal, "Newest release", "not checked yet"),
+        }
+        ui.add_space(6.0);
+        let newer = app.spindle_release.clone();
+        if let Some(r) = &newer {
+            if !r.notes.trim().is_empty() {
+                egui::ScrollArea::vertical().max_height(200.0).show(ui, |ui| {
+                    ui.label(egui::RichText::new(r.notes.trim()).size(12.0).color(pal.muted));
+                });
+                ui.add_space(6.0);
+            }
+            if let Err(e) = &dir {
+                ui.label(egui::RichText::new(format!("{e:#}")).size(12.0).color(pal.orange));
+            }
+        } else if latest.is_some() {
+            ui.label(egui::RichText::new(format!("{}  You have the newest Spindle.", I::CIRCLE_CHECK)).color(pal.green));
+        }
+        if updating {
+            ui.label(egui::RichText::new("Downloading and installing…").size(12.0).color(pal.muted));
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if let Some(r) = &newer {
+                let can = dir.is_ok() && !updating;
+                if ui.add_enabled(can, egui::Button::new(format!("{}  Install Spindle {} and Restart", I::ARROW_UP_CIRCLE, r.version))).clicked() {
+                    install = true;
+                }
+                if ui.button("Release Notes").clicked() {
+                    crate::platform::open_url(&r.url);
+                }
+            } else if ui.add_enabled(!checking, egui::Button::new(format!("{}  Check Now", I::REFRESH_CW))).clicked() {
+                check = true;
+            }
+            if ui.button("Close").clicked() {
+                close = true;
+            }
+        });
+    });
+    if install {
+        app.install_spindle_update(ctx);
+    }
+    if check {
+        app.check_spindle_release();
+    }
+    if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.dlg.self_update = false;
+    }
+}
+
+fn kv_line(ui: &mut egui::Ui, pal: &crate::theme::Palette, k: &str, v: &str) {
+    ui.horizontal(|ui| {
+        ui.add_sized([120.0, 18.0], egui::Label::new(egui::RichText::new(k).size(12.0).color(pal.muted)));
+        ui.label(egui::RichText::new(v).size(12.0).color(pal.text));
+    });
 }
 
 /// Profile compatibility report for a build, with Launch Anyway.

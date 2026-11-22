@@ -59,7 +59,7 @@ fn now() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
-fn client() -> Result<reqwest::blocking::Client> {
+pub(crate) fn client() -> Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .user_agent(concat!("Spindle/", env!("CARGO_PKG_VERSION")))
         .connect_timeout(Duration::from_secs(30))
@@ -67,7 +67,7 @@ fn client() -> Result<reqwest::blocking::Client> {
         .build()?)
 }
 
-fn get_text(client: &reqwest::blocking::Client, url: &str) -> Result<String> {
+pub(crate) fn get_text(client: &reqwest::blocking::Client, url: &str) -> Result<String> {
     let resp = client.get(url).send().with_context(|| format!("requesting {url}"))?;
     if !resp.status().is_success() {
         bail!("{url} answered {}", resp.status());
@@ -139,6 +139,9 @@ fn release_suffix() -> Option<&'static str> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
         ("windows", "x86_64") => Some("-windows-x64.zip"),
         ("windows", "aarch64") => Some("-windows-arm64.zip"),
+        ("linux", "x86_64") => Some("-linux-x64.tar.xz"),
+        ("macos", "aarch64") => Some("-macos-arm64.dmg"),
+        ("macos", "x86_64") => Some("-macos-x64.dmg"),
         _ => None,
     }
 }
@@ -268,10 +271,14 @@ struct BuilderEntry {
     release_cycle: String,
 }
 
-fn builder_platform() -> Option<(&'static str, &'static str)> {
+/// builder.blender.org (platform, architecture, file extension) of this platform's archives.
+fn builder_platform() -> Option<(&'static str, &'static str, &'static str)> {
     match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("windows", "x86_64") => Some(("windows", "amd64")),
-        ("windows", "aarch64") => Some(("windows", "arm64")),
+        ("windows", "x86_64") => Some(("windows", "amd64", "zip")),
+        ("windows", "aarch64") => Some(("windows", "arm64", "zip")),
+        ("linux", "x86_64") => Some(("linux", "x86_64", "xz")),
+        ("macos", "aarch64") => Some(("darwin", "arm64", "dmg")),
+        ("macos", "x86_64") => Some(("darwin", "x86_64", "dmg")),
         _ => None,
     }
 }
@@ -284,12 +291,12 @@ fn fetch_builder(client: &reqwest::blocking::Client, kind: &str) -> Result<Vec<A
     Ok(parse_builder(entries, kind, platform))
 }
 
-fn parse_builder(entries: Vec<BuilderEntry>, kind: &str, (os, arch): (&str, &str)) -> Vec<Available> {
+fn parse_builder(entries: Vec<BuilderEntry>, kind: &str, (os, arch, ext): (&str, &str, &str)) -> Vec<Available> {
     let sums: std::collections::HashSet<String> =
         entries.iter().filter(|e| e.file_extension == "sha256").map(|e| e.file_name.clone()).collect();
     let mut out = Vec::new();
     for e in entries {
-        if e.platform != os || e.architecture != arch || e.file_extension != "zip" {
+        if e.platform != os || e.architecture != arch || e.file_extension != ext {
             continue;
         }
         let channel = if kind == "daily" { Channel::Daily } else { Channel::Experimental };
@@ -479,7 +486,7 @@ fn download(a: &Available, part: &Path, progress: &Progress) -> Result<()> {
 }
 
 /// A .sha256 file is either the bare hash (builder) or "hash  filename" lines (releases).
-fn expected_sha256(text: &str, file_name: &str) -> Result<String> {
+pub(crate) fn expected_sha256(text: &str, file_name: &str) -> Result<String> {
     let is_hash = |s: &str| s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit());
     for line in text.lines() {
         let mut parts = line.split_whitespace();
@@ -496,27 +503,15 @@ fn unpack(sp: &Spindle, a: &Available, archive: &Path, dest: &Path, progress: &P
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp)?;
     let result = (|| -> Result<()> {
-        let mut zip = zip::ZipArchive::new(File::open(archive)?).context("opening the build archive")?;
-        let count = zip.len() as u64;
-        progress.set(Phase::Extracting, 0, count);
-        for i in 0..zip.len() {
-            if progress.cancel.load(Ordering::Relaxed) {
-                bail!("cancelled while unpacking");
-            }
-            let mut entry = zip.by_index(i)?;
-            let Some(rel) = entry.enclosed_name() else { continue };
-            let path = tmp.join(rel);
-            if entry.is_dir() {
-                fs::create_dir_all(&path)?;
-            } else {
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                let mut f = BufWriter::new(File::create(&path)?);
-                std::io::copy(&mut entry, &mut f)?;
-                f.flush()?;
-            }
-            progress.done.store(i as u64 + 1, Ordering::Relaxed);
+        let name = archive.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+        if name.ends_with(".zip") {
+            unzip(archive, &tmp, progress)?;
+        } else if name.ends_with(".tar.xz") {
+            untar(archive, &tmp, progress)?;
+        } else if name.ends_with(".dmg") {
+            undmg(archive, &tmp, progress)?;
+        } else {
+            bail!("don't know how to unpack {name}");
         }
         // Release archives hold one top folder ("blender-4.2.9-windows-x64/"): use its contents.
         let entries: Vec<PathBuf> = fs::read_dir(&tmp)?.filter_map(|e| e.ok().map(|e| e.path())).collect();
@@ -543,6 +538,99 @@ fn unpack(sp: &Spindle, a: &Available, archive: &Path, dest: &Path, progress: &P
     })();
     let _ = fs::remove_dir_all(&tmp);
     result
+}
+
+fn unzip(archive: &Path, tmp: &Path, progress: &Progress) -> Result<()> {
+    let mut zip = zip::ZipArchive::new(File::open(archive)?).context("opening the build archive")?;
+    let count = zip.len() as u64;
+    progress.set(Phase::Extracting, 0, count);
+    for i in 0..zip.len() {
+        if progress.cancel.load(Ordering::Relaxed) {
+            bail!("cancelled while unpacking");
+        }
+        let mut entry = zip.by_index(i)?;
+        let Some(rel) = entry.enclosed_name() else { continue };
+        let path = tmp.join(rel);
+        if entry.is_dir() {
+            fs::create_dir_all(&path)?;
+        } else {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut f = BufWriter::new(File::create(&path)?);
+            std::io::copy(&mut entry, &mut f)?;
+            f.flush()?;
+            #[cfg(unix)]
+            if let Some(mode) = entry.unix_mode() {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&path, fs::Permissions::from_mode(mode))?;
+            }
+        }
+        progress.done.store(i as u64 + 1, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// Linux builds are .tar.xz; every Linux has `tar` with xz support, which also keeps
+/// permissions and symlinks right.
+fn untar(archive: &Path, tmp: &Path, progress: &Progress) -> Result<()> {
+    progress.set(Phase::Extracting, 0, 0);
+    run_tool(std::process::Command::new("tar").arg("-xJf").arg(archive).arg("-C").arg(tmp), progress, "tar")
+}
+
+/// macOS builds are disk images holding Blender.app: mount, copy the app with `ditto`
+/// (keeps the code signature, symlinks and extended attributes), unmount.
+fn undmg(archive: &Path, tmp: &Path, progress: &Progress) -> Result<()> {
+    progress.set(Phase::Extracting, 0, 0);
+    let mount = tmp.with_extension("mount");
+    let _ = fs::remove_dir_all(&mount);
+    fs::create_dir_all(&mount)?;
+    run_tool(
+        std::process::Command::new("hdiutil")
+            .args(["attach", "-nobrowse", "-readonly", "-noautoopen", "-mountpoint"])
+            .arg(&mount)
+            .arg(archive),
+        progress,
+        "hdiutil attach",
+    )?;
+    let copied = (|| {
+        let app = fs::read_dir(&mount)?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| p.extension().is_some_and(|e| e == "app"))
+            .context("the disk image has no .app")?;
+        run_tool(std::process::Command::new("ditto").arg(&app).arg(tmp.join("Blender.app")), progress, "ditto")
+    })();
+    let _ = std::process::Command::new("hdiutil").args(["detach", "-quiet", "-force"]).arg(&mount).status();
+    let _ = fs::remove_dir(&mount);
+    copied
+}
+
+/// Run an unpacking tool, stopping it if the download is cancelled.
+fn run_tool(cmd: &mut std::process::Command, progress: &Progress, what: &str) -> Result<()> {
+    let mut child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .with_context(|| format!("starting {what}"))?;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            if status.success() {
+                return Ok(());
+            }
+            let mut err = String::new();
+            if let Some(mut e) = child.stderr.take() {
+                let _ = std::io::Read::read_to_string(&mut e, &mut err);
+            }
+            bail!("{what} failed ({status}): {}", err.trim());
+        }
+        if progress.cancel.load(Ordering::Relaxed) {
+            let _ = child.kill();
+            let _ = child.wait();
+            bail!("cancelled while unpacking");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
 }
 
 /// Group a catalog by channel (for listings).
@@ -583,7 +671,9 @@ mod tests {
  {"url":"https://cdn/x/blender-5.4.0-alpha+main.abcdef123456-windows.amd64-release.zip.sha256","app":"Blender","version":"5.4.0","branch":"main","hash":"abcdef123456","platform":"windows","architecture":"amd64","file_name":"blender-5.4.0-alpha+main.abcdef123456-windows.amd64-release.zip.sha256","file_size":64,"file_extension":"sha256","release_cycle":"alpha"},
  {"url":"https://cdn/x/a.zip","app":"Blender","version":"5.4.0","branch":"main","hash":"1","platform":"linux","architecture":"x86_64","file_name":"a.zip","file_extension":"zip","release_cycle":"alpha"}
 ]"#;
-        let list = parse_builder(serde_json::from_str(json).unwrap(), "daily", ("windows", "amd64"));
+        let linux = parse_builder(serde_json::from_str(json).unwrap(), "daily", ("linux", "x86_64", "zip"));
+        assert_eq!(linux.len(), 1);
+        let list = parse_builder(serde_json::from_str(json).unwrap(), "daily", ("windows", "amd64", "zip"));
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].name, "blender-5.4.0-alpha+main.abcdef123456");
         assert!(list[0].sha256_url.as_deref().unwrap().ends_with(".zip.sha256"));

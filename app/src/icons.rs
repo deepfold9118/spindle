@@ -217,3 +217,5 @@ pub const CIRCLE_ALERT: &str = "\u{e077}";
 pub const USER: &str = "\u{e19f}";
 pub const ARCHIVE: &str = "\u{e041}";
 pub const CALENDAR_CLOCK: &str = "\u{e304}";
+pub const FILE_BOX: &str = "\u{e310}";
+pub const ARROW_UP_CIRCLE: &str = "\u{e07b}";

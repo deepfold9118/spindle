@@ -148,7 +148,32 @@ fn builds_view(app: &mut App, ui: &mut Ui) {
         let x = rect.left() + 12.0;
         let br = badge(ui, &pal, egui::pos2(x, rect.top() + 12.0), channel.label(), channel_color(&pal, channel), channel_fg(&pal, channel));
         let marker = compat_marker(app, &b.name);
-        let name_w = rect.right() - br.right() - if marker.is_some() { 48.0 } else { 24.0 };
+        let name_w = rect.right() - br.right() - if marker.is_some() { 72.0 } else { 48.0 };
+        // Favourite star, top right (left of the compatibility marker).
+        let sx = rect.right() - if marker.is_some() { 46.0 } else { 22.0 };
+        let sr = Rect::from_center_size(egui::pos2(sx, br.center().y), Vec2::splat(22.0));
+        let tip = match (b.favourite, i == 0) {
+            (true, true) => "Default build (first favourite) · click to unstar",
+            (true, false) => "Favourite · click to unstar",
+            _ => "Star: favourites are listed first, and the first one is the default build",
+        };
+        let star = ui.interact(sr, ui.id().with(("fav", &b.name)), Sense::click()).on_hover_text(tip);
+        let star_col = if b.favourite {
+            pal.accent
+        } else if star.hovered() {
+            pal.text
+        } else if resp.hovered() || selected {
+            pal.faint
+        } else {
+            Color32::TRANSPARENT
+        };
+        if b.favourite {
+            ui.painter().circle_filled(sr.center(), 4.0, pal.accent);
+        }
+        ui.painter().text(sr.center(), Align2::CENTER_CENTER, I::STAR, icon_font(15.0), star_col);
+        if star.clicked() {
+            app.toggle_favourite(&b.name);
+        }
         text_clip(ui, egui::pos2(br.right() + 8.0, br.center().y), name_w, &b.name, egui::FontId::proportional(11.5), pal.muted);
         if let Some((icon, col, tip)) = marker {
             let mr = Rect::from_center_size(egui::pos2(rect.right() - 22.0, br.center().y), Vec2::splat(22.0));
@@ -217,8 +242,8 @@ fn running_view(app: &mut App, ui: &mut Ui) {
         );
         if !app.builds.is_empty() {
             ui.vertical_centered(|ui| {
-                if icon_text_button(ui, &pal, I::PLAY, "Launch Newest Build", true).clicked() {
-                    app.launch_newest(&ctx);
+                if icon_text_button(ui, &pal, I::PLAY, "Launch Default Build", true).clicked() {
+                    app.launch_default(&ctx);
                 }
             });
         }

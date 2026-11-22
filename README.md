@@ -1,30 +1,146 @@
 <p align="center">
-  <img src="artwork/spindle_hoz_logo_lockup.svg" alt="Spindle" width="440">
+  <img src="artwork/spindle_hoz_logo_lockup.svg" alt="Spindle" width="420">
 </p>
 
-<p align="center">A build, profile and add-on manager for Blender, written in Rust.</p>
+<p align="center">
+  <b>One place for all your Blender builds, one profile for all of them.</b><br>
+  Download releases and daily builds, launch any of them with the same preferences and add-ons,<br>
+  and let your agents see the Blender that's actually running.
+</p>
 
----
+<p align="center">
+  <a href="https://github.com/deepfold9118/spindle/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/deepfold9118/spindle?color=fb9e35&label=release"></a>
+  <a href="https://github.com/deepfold9118/spindle/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/deepfold9118/spindle/ci.yml?branch=main&label=CI"></a>
+  <a href="LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
+  <img alt="Windows | Linux | macOS" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-555">
+</p>
 
-- **Download Blender builds**: official Stable and LTS releases from download.blender.org,
-  plus Daily, experimental-branch and patch (PR) builds from builder.blender.org. Every
-  download is checked against its published SHA-256 before it is unpacked into the library.
-- **New-build alerts**: Spindle checks for newer builds of what you have installed (a newer
-  patch in the same series, a newer daily of the same branch, a new release series) every six
-  hours and announces each one once with a notification.
-- **Shared profiles**: every build is launched with `BLENDER_USER_RESOURCES` pointing at a
-  Spindle profile, so all builds (old and newly downloaded) use the same preferences,
-  add-ons and extensions. Nothing is copied per build, and a `portable/` folder can't hide them.
-- **Profile compatibility checks**: before an older build is launched onto a profile, Spindle
-  says exactly what will break and why (see below), and asks before going ahead.
-- **Running-instance discovery for agents**: a bridge script in each profile's
-  `scripts/startup` writes a heartbeat for every running Blender, including the host and port
-  of any enabled Blender MCP add-on. `spindle-mcp` serves that to agents over MCP.
-- **Superhive as a download source**: purchased extensions are fetched from Superhive's
-  Blender extensions (API v1) repository into Spindle's add-on library, verified by SHA-256.
-  The API token lives in the OS credential store and is never written into Blender preferences.
-- **Stays in the tray**: closing the window keeps Spindle in the notification area to launch
-  builds and watch for new ones. Starting Spindle again brings the running one forward.
+<p align="center">
+  <img src="docs/screenshots/builds.png" alt="Spindle's build library" width="900">
+</p>
+
+## Why Spindle
+
+Portable Blender builds are great until every one of them has its own preferences, add-ons
+need reinstalling for each new daily, and an agent asking "which Blender is open?" can't tell.
+Spindle keeps a library of builds, launches every one of them onto a shared profile, checks
+first when an older build would trip over newer preferences, and reports the running Blenders
+(and their MCP add-on ports) to agents.
+
+## Features
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**Download builds**<br>
+Official Stable and LTS releases from download.blender.org, and Daily, experimental-branch
+and patch (PR) builds from builder.blender.org. Every download is checked against its
+published SHA-256 before it's unpacked.
+
+</td>
+<td width="50%" valign="top">
+
+**Shared profiles**<br>
+Every build launches with `BLENDER_USER_RESOURCES` pointing at a Spindle profile: the same
+preferences, add-ons and extensions in old builds and in the daily you downloaded a minute ago.
+Nothing is copied per build.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**Profile compatibility checks**<br>
+Before an older build opens a profile, Spindle says exactly what will break and why: unreadable
+5.0+ preferences, extensions outside their Blender range, wheels for another Python, and more.
+
+</td>
+<td valign="top">
+
+**Opens .blend files in the right build**<br>
+Register Spindle for `.blend` files and each one opens in the build of the Blender that saved
+it, read from the file header (zstd and gzip compressed files too).
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**Running Blenders for agents**<br>
+A bridge script reports every running Blender, its open file and its MCP add-on's host and
+port. `spindle-mcp` serves that to any MCP client, and can launch builds.
+
+</td>
+<td valign="top">
+
+**New-build alerts, tray, favourites**<br>
+Spindle checks for newer builds every six hours and stays in the tray (Windows, Linux, macOS)
+to launch builds. Star favourites; the first one is the default. It can update itself, too.
+
+</td>
+</tr>
+</table>
+
+Superhive purchases can be downloaded into Spindle's add-on library and installed into any
+profile; the API token stays in the OS credential store.
+
+## Screenshots
+
+| Download builds | Running Blenders and their MCP ports |
+|---|---|
+| <img src="docs/screenshots/downloads.png" alt="Download Builds"> | <img src="docs/screenshots/running.png" alt="Running Blenders"> |
+| **Profile compatibility check** | **Light theme** |
+| <img src="docs/screenshots/compatibility.png" alt="Profile compatibility dialog"> | <img src="docs/screenshots/builds-light.png" alt="Light theme"> |
+
+## Install
+
+Download the archive for your platform from the
+[latest release](https://github.com/deepfold9118/spindle/releases/latest), unpack it anywhere
+and run `spindle_app`. Each archive holds three programs:
+
+| Program | What it is |
+|---|---|
+| `spindle_app` | the desktop app |
+| `spindle` | the command line |
+| `spindle-mcp` | the MCP server for agents (stdio) |
+
+- **Windows** (`windows-x64.zip`): on first start Windows SmartScreen may ask, since the
+  programs aren't signed. A new tray icon starts in the overflow (^) area; pin it under
+  Settings > Personalization > Taskbar > Other system tray icons.
+- **Linux** (`linux-x64.tar.gz`): the tray icon uses StatusNotifierItem (KDE, most desktops;
+  GNOME needs the AppIndicator extension).
+- **macOS** (`macos-arm64` / `macos-x64.tar.gz`): the programs aren't notarised, so clear the
+  download quarantine once: `xattr -dr com.apple.quarantine <folder>`. Opening `.blend` files
+  from Finder needs an app bundle, which isn't shipped yet; use `spindle open <file>`.
+
+Spindle updates itself: **Help > Spindle Updates** in the app, or `spindle self-update`. Every
+download is checked against the release's `SHA256SUMS`.
+
+## Getting started
+
+1. Start `spindle_app`. Pick a library folder with `spindle set-library <dir>` if you don't
+   want the default (your platform's local data folder).
+2. **Download Builds** (Ctrl+5): pick a release or a daily, or add a build you already have
+   with **Add Build…**.
+3. Launch it. The first launch sets up the `default` profile; every build you launch later uses
+   the same one. Use **Launch with** in the toolbar for other profiles.
+4. Optional, under **Customize Program**: start Spindle when you sign in, and open `.blend`
+   files with Spindle.
+
+## Agents (MCP)
+
+```json
+{ "mcpServers": { "spindle": { "command": "path/to/spindle-mcp" } } }
+```
+
+| Tool | Does |
+|---|---|
+| `list_running_blenders` | Blenders started by Spindle, their open file, profile and MCP add-on address |
+| `list_builds` | the build library |
+| `launch_blender` | start a build (or the build that suits a `file`) with a profile; refuses builds that can't read the profile unless `force` |
+
+**Copy MCP Client Config** in the app puts the snippet above on the clipboard with the right path.
 
 ## Profile compatibility
 
@@ -38,111 +154,78 @@ files it doesn't understand. `spindle check <build>` (and the app, before launch
 | `startup.blend` in the 5.0+ format, build older than 4.5 | The factory startup scene opens instead. |
 | Enabled extensions on a build older than 4.2 | The extensions platform doesn't exist there; each one is named. |
 | `blender_version_min` / `blender_version_max` of enabled extensions | Blender refuses to load them; each one is named with the version it needs. |
-| Extension wheels built for another Python | Bundled packages fail to import (the build's Python is read from its `python3XX.dll`). |
+| Extension wheels built for another Python | Bundled packages fail to import (the build's Python is read from its `python3XX` library). |
 | Legacy add-ons whose `bl_info["blender"]` is newer than the build | Blender flags them and they may fail to register. |
 
 Builds older than 3.6 ignore `BLENDER_USER_RESOURCES` (verified with 2.93), so Spindle also sets
 `BLENDER_USER_CONFIG`, `BLENDER_USER_SCRIPTS` and `BLENDER_USER_DATAFILES` for them.
-`spindle launch` and the MCP `launch_blender` tool refuse a blocker unless forced
-(`--force` / `"force": true`); warnings are printed or returned with the launch.
+`spindle launch` and the MCP `launch_blender` tool refuse a blocker unless forced.
 
-## Layout
+When a `.blend` file is opened with Spindle it goes to a build of the series that saved it (a
+favourite first), else the default build, else the oldest newer build, skipping builds the
+profile blocks. A file newer than every build asks first.
 
-```
-app/                     desktop UI (eframe/egui), built the same way and in the same ArtCraft
-                         style as Fontabulous / Fontabulous Studio: custom title bar, library tree,
-                         cards, Task Panel, status bar, Inter + Lucide, light/dark; tray icon
-artwork/                 logo lockups and the symbol (the app's icons are drawn from spindle_symbol.svg)
-crates/spindle-core      library logic (builds, downloads, profiles, compatibility, launch,
-                         instances, add-ons, superhive)
-crates/spindle-launcher  `spindle` CLI
-crates/spindle-mcp       MCP server (stdio)
-bridge/spindle_bridge.py heartbeat script, embedded into spindle-core and installed into profiles
-```
-
-Library (default: platform local data dir; set with `spindle set-library <dir>`):
+## Command line
 
 ```
-builds/<name>/blender.exe
-builds/<name>/spindle-build.json                  where a downloaded build came from (channel, branch, commit)
-profiles/<name>/{config,scripts,extensions,...}    same layout as %APPDATA%/Blender Foundation/Blender/<ver>
-addons/<source>/<id>/<version>/{<archive>.zip, addon.json}
-downloads/                                        partial build downloads
-run/instances/<pid>.json                          bridge heartbeats (stale after 20 s)
-run/available.json                                cached list of downloadable builds
-```
-
-## Usage
-
-Desktop app:
-
-```
-cargo run -p spindle_app
-spindle_app --tray                 # start hidden in the notification area
-spindle_app --quit                 # ask a running Spindle to exit (installers, updaters)
-spindle_app --screenshot out.png [--view builds|running|addons|profiles|downloads]
-            [--theme dark|light] [--show-compat <build>]
-```
-
-`--screenshot` draws the real UI against the library, saves the picture and quits (the
-Fontabulous build check); `--view`, `--theme` and `--show-compat` apply to that run only.
-On Windows 11 a new tray icon starts in the overflow (^) area; turn it on under
-Settings > Personalization > Taskbar > Other system tray icons.
-
-CLI:
-
-```
-cargo build --release
 spindle info
-spindle builds list
+spindle builds list                     # * marks favourites
 spindle builds available [--channel lts|stable|daily|experimental] [--refresh] [--json]
-spindle builds download 4.5        # newest 4.5 release; or an exact name from `available`
+spindle builds download 4.5             # newest 4.5 release; or an exact name from `available`
 spindle builds updates
-spindle builds remove <build>      # library builds go to the Recycle Bin; external ones are unregistered
+spindle builds favourite <build> [--remove]
+spindle builds remove <build>           # library builds go to the Recycle Bin / Trash
+spindle launch [<build>] [--profile default] [--force] [-- blender args]
+spindle open <file.blend> [--build <build>] [--dry-run]
 spindle check <build> [--profile default] [--json]
-spindle launch 5.3 [--profile default] [--force] [-- file.blend]
 spindle instances [--json]
-spindle superhive login            # prompts; or `--stdin`
-spindle superhive list | sync
+spindle desktop [--autostart on|off] [--open-blend on|off]
+spindle self-update [--check]
+spindle superhive login | list | sync
 spindle addons list
 spindle addons install <id> --build 5.3
 ```
 
-Agent config (any MCP client):
+The app also takes `--tray` (start hidden in the tray), `--quit` (ask a running Spindle to exit),
+a `.blend` path (open it in the right build without showing the window), and
+`--screenshot out.png [--view builds|running|addons|profiles|downloads] [--theme dark|light]`.
 
-```json
-{ "mcpServers": { "spindle": { "command": "path/to/spindle-mcp" } } }
-```
-
-Tools: `list_running_blenders`, `list_builds`, `launch_blender`.
-
-## Testing
+## Library layout
 
 ```
-cargo test                 # unit tests
-pwsh scripts/e2e.ps1       # end-to-end against the real library (throwaway profile, deleted after)
+builds/<name>/                       one folder per build (blender.exe, or Blender.app on macOS)
+builds/<name>/spindle-build.json     where a downloaded build came from (channel, branch, commit)
+profiles/<name>/                     same layout as Blender's own config folder for a version
+addons/<source>/<id>/<version>/      add-on archives with addon.json
+downloads/                           partial build downloads
+run/                                 running-instance heartbeats, cached build listings
 ```
 
-The e2e script checks the profile redirect on every build, launch -> heartbeat -> `spindle-mcp`
--> UI screenshots of every view, both themes and the compatibility dialog (`checks/ui/`,
-overwritten each run) -> close, Superhive list/sync (when a token is stored), installing a
-library add-on with one build and seeing it enabled in another, the download listings for every
-channel, the compatibility verdict for every build (and `spindle-mcp` refusing an old build),
-removing an external build, and the tray (close to tray, show, single instance, `--quit`).
-Downloading a whole build isn't repeated each run; `spindle builds download <version>` does it.
+## Building from source
 
-## Superhive notes
+```
+cargo build --release
+cargo test --workspace
+pwsh scripts/e2e.ps1          # end-to-end against your real library (Windows; throwaway profile)
+pwsh scripts/screenshots.ps1  # regenerate docs/screenshots from a made-up demo library
+pwsh scripts/licenses.ps1     # regenerate THIRD-PARTY-LICENSES.html (needs cargo-about)
+```
 
-- Index: `GET https://superhivemarket.com/api/v1/extensions/` with `Authorization: Bearer <token>`
-  returns a Blender extensions v1 listing of purchases.
-- Archive downloads answer **403** to the Bearer header and only accept the token as a `token`
-  query parameter. Spindle tries the header first and falls back to the query form; the URL with
-  the token is never logged (reqwest errors are stripped of URLs).
-- `GET /api/v1/orders` also works (orders with their order items) if richer metadata is needed.
+| Path | Contents |
+|---|---|
+| `app/` | desktop app (eframe/egui): title bar, library tree, cards, Task Panel, tray |
+| `crates/spindle-core` | builds, downloads, profiles, compatibility, launching, instances, add-ons, Superhive, desktop integration, self-update |
+| `crates/spindle-launcher` | the `spindle` command line |
+| `crates/spindle-mcp` | the MCP server |
+| `bridge/spindle_bridge.py` | heartbeat script installed into each profile's `scripts/startup` |
+| `artwork/` | the logo; the app's icons are drawn from `spindle_symbol.svg` |
 
-## Not done yet
+Releases are built by GitHub Actions when a `v*` tag is pushed (`.github/workflows/release.yml`).
 
-- Build downloads and the tray are Windows-only for now (the rest is cross-platform).
-- Starting Spindle with Windows (`--tray` exists for it; there's no setting yet).
-- Favourite builds, `.blend` file association, and Spindle updating itself.
-- Licence, screenshots and GitHub releases, ahead of publishing.
+## License
+
+Spindle is licensed under the [Apache License 2.0](LICENSE); see [NOTICE](NOTICE). It bundles the
+Inter typeface (SIL OFL 1.1) and Lucide icons (ISC), and the licences of every Rust crate in the
+binaries are in [THIRD-PARTY-LICENSES.html](THIRD-PARTY-LICENSES.html), which ships with each
+release. Blender is a trademark of the Blender Foundation; Spindle isn't affiliated with the
+Blender Foundation or Superhive.

@@ -145,9 +145,9 @@ fn menus(app: &mut App, ui: &mut egui::Ui) {
         }
     });
     ui.menu_button("Library", |ui| {
-        let newest = app.builds.first().map(|b| b.version.clone().unwrap_or(b.name.clone()));
-        if item(ui, I::PLAY, &format!("Launch Newest ({})", newest.as_deref().unwrap_or("none")), "Ctrl+L", newest.is_some()) {
-            app.launch_newest(&ctx);
+        let newest = app.default_label();
+        if item(ui, I::PLAY, &format!("Launch Default ({})", newest.as_deref().unwrap_or("none")), "Ctrl+L", newest.is_some()) {
+            app.launch_default(&ctx);
         }
         if item(ui, I::REFRESH_CW, "Refresh", "F5", true) {
             app.refresh();
@@ -177,6 +177,16 @@ fn menus(app: &mut App, ui: &mut egui::Ui) {
         }
     });
     ui.menu_button("Help", |ui| {
+        let label = match &app.spindle_release {
+            Some(r) => format!("Update to Spindle {}…", r.version),
+            None => "Spindle Updates…".to_string(),
+        };
+        if item(ui, I::ARROW_UP_CIRCLE, &label, "", true) {
+            app.dlg.self_update = true;
+            if app.spindle_release.is_none() {
+                app.check_spindle_release();
+            }
+        }
         if item(ui, I::INFO, "About Spindle", "", true) {
             app.dlg.about = true;
         }
@@ -282,6 +292,15 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
             ui.label(egui::RichText::new(I::INFO).font(icon_font(12.0)).color(col));
             ui.add(egui::Label::new(egui::RichText::new(msg).size(11.5).color(col)).truncate());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if let Some(r) = &app.spindle_release {
+                    let chip = ui
+                        .add(egui::Label::new(egui::RichText::new(format!("{}  Spindle {} available", I::ARROW_UP_CIRCLE, r.version)).size(11.5).color(pal.accent)).sense(Sense::click()))
+                        .on_hover_text("Install the new Spindle");
+                    if chip.clicked() {
+                        app.dlg.self_update = true;
+                    }
+                    ui.add_space(12.0);
+                }
                 let running = app.instances.len();
                 ui.label(
                     egui::RichText::new(format!(
@@ -376,7 +395,7 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
             app.set_view(View::Downloads);
         }
         if l {
-            app.launch_newest(ctx);
+            app.launch_default(ctx);
         }
     }
 }
