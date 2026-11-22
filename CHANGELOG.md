@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.2] - 2026-11-22
+
+- **New logo**: a simpler Spindle mark that stays readable at tray and taskbar sizes. The
+  program icon, tray icon, title bar and README use it, and the app's accent colour follows
+  the logo's new orange (#f28526).
+
 ## [0.1.1] - 2026-11-22
 
 - **Installers**: `install.ps1` (Windows) and `install.sh` (Linux, macOS) install Spindle for the

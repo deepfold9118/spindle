@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/deepfold9118/spindle/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/deepfold9118/spindle?color=fb9e35&label=release"></a>
+  <a href="https://github.com/deepfold9118/spindle/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/deepfold9118/spindle?color=f28526&label=release"></a>
   <a href="https://github.com/deepfold9118/spindle/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/deepfold9118/spindle/ci.yml?branch=main&label=CI"></a>
   <a href="LICENSE"><img alt="Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
   <img alt="Windows | Linux | macOS" src="https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-555">

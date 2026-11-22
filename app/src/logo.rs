@@ -6,10 +6,10 @@
 #![allow(dead_code)]
 
 /// Logo colour (the theme accent).
-pub const COLOR: [u8; 3] = [0xfb, 0x9e, 0x35];
+pub const COLOR: [u8; 3] = [0xf2, 0x85, 0x26];
 
 /// The symbol artwork. Its single path (absolute M/C/L/Z commands) is filled even-odd:
-/// the outer wheel minus the two blade slots and the hub hole.
+/// the hub and its three arms minus the hole.
 pub const SVG: &str = include_str!("../../artwork/spindle_symbol.svg");
 
 /// The `d` attribute of the artwork's path.
