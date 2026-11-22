@@ -1,0 +1,377 @@
+//! Centre area: build cards, running-instance cards, the add-on library list and
+//! profile cards. Card backgrounds take their click before their buttons are added,
+//! so the buttons on top still win their own clicks.
+
+use std::path::Path;
+
+use egui::{Align, Align2, Color32, CornerRadius, Layout, Rect, Sense, Stroke, StrokeKind, Ui, Vec2};
+
+use crate::app::*;
+use crate::icons as I;
+use crate::platform;
+use crate::theme::{bold, icon_font, Palette};
+use crate::widgets::*;
+
+pub fn center(app: &mut App, ui: &mut Ui) {
+    let inner = ui.available_rect_before_wrap().shrink(10.0);
+    ui.scope_builder(egui::UiBuilder::new().max_rect(inner), |ui| {
+        egui::ScrollArea::vertical().id_salt(("center", app.prefs.view as u8)).auto_shrink([false, false]).show(ui, |ui| match app.prefs.view {
+            View::Builds => builds_view(app, ui),
+            View::Running => running_view(app, ui),
+            View::Addons => addons_view(app, ui),
+            View::Profiles => profiles_view(app, ui),
+        });
+    });
+}
+
+/// Lay out `n` cards of at least `min_w` wide in rows; `draw` gets each card's rect.
+fn card_grid(ui: &mut Ui, n: usize, min_w: f32, h: f32, mut draw: impl FnMut(&mut Ui, usize, Rect)) {
+    let gap = 10.0;
+    let avail = ui.available_width();
+    let cols = ((avail + gap) / (min_w + gap)).floor().max(1.0) as usize;
+    let w = (avail - gap * (cols as f32 - 1.0)) / cols as f32;
+    let mut i = 0;
+    while i < n {
+        let (row, _) = ui.allocate_exact_size(Vec2::new(avail, h), Sense::hover());
+        for c in 0..cols {
+            if i >= n {
+                break;
+            }
+            let rect = Rect::from_min_size(row.min + Vec2::new(c as f32 * (w + gap), 0.0), Vec2::new(w, h));
+            draw(ui, i, rect);
+            i += 1;
+        }
+        ui.add_space(gap);
+    }
+}
+
+fn card_bg(ui: &Ui, pal: &Palette, rect: Rect, selected: bool, hovered: bool) {
+    ui.painter().rect_filled(rect, CornerRadius::same(6), pal.card);
+    let stroke = if selected {
+        Stroke::new(1.5, pal.accent)
+    } else if hovered {
+        Stroke::new(1.0, pal.hover)
+    } else {
+        Stroke::new(1.0, pal.border)
+    };
+    ui.painter().rect_stroke(rect, CornerRadius::same(6), stroke, StrokeKind::Inside);
+}
+
+/// Truncated single-line text painted at a position.
+fn text_clip(ui: &Ui, pos: egui::Pos2, max_w: f32, text: &str, font: egui::FontId, color: Color32) {
+    let galley = ui.painter().layout(text.to_string(), font, color, f32::INFINITY);
+    let clip = Rect::from_min_size(egui::pos2(pos.x, pos.y - galley.size().y / 2.0), Vec2::new(max_w.max(1.0), galley.size().y));
+    ui.painter().with_clip_rect(clip).galley(clip.min, galley, color);
+}
+
+fn empty_state(ui: &mut Ui, pal: &Palette, icon: &str, title: &str, body: &str) -> bool {
+    let mut clicked = false;
+    ui.add_space(80.0);
+    ui.vertical_centered(|ui| {
+        ui.label(egui::RichText::new(icon).font(icon_font(40.0)).color(pal.faint));
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new(title).font(bold(16.0)).color(pal.text));
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(body).size(12.5).color(pal.muted));
+        ui.add_space(12.0);
+        clicked = true;
+    });
+    clicked
+}
+
+// --------------------------------------------------------------------------------------------
+// Builds
+
+fn channel_color(pal: &Palette, c: Channel) -> Color32 {
+    match c {
+        Channel::Lts => pal.accent,
+        Channel::Stable => pal.green,
+        Channel::Daily => pal.blue,
+        Channel::Experimental | Channel::Other => pal.grey,
+    }
+}
+
+fn builds_view(app: &mut App, ui: &mut Ui) {
+    let pal = app.pal;
+    let ctx = ui.ctx().clone();
+    let builds: Vec<_> = app.visible_builds().into_iter().cloned().collect();
+    if builds.is_empty() {
+        empty_state(
+            ui,
+            &pal,
+            I::HARD_DRIVE,
+            if app.builds.is_empty() { "No builds yet" } else { "No builds match" },
+            if app.builds.is_empty() { "Copy Blender builds into the library's builds folder, or use Add Build…" } else { "Clear the search or turn on more channels" },
+        );
+        if app.builds.is_empty() {
+            ui.vertical_centered(|ui| {
+                if icon_text_button(ui, &pal, I::PLUS, "Add Build…", true).clicked() {
+                    app.add_external_build(&ctx);
+                }
+            });
+        }
+        return;
+    }
+    card_grid(ui, builds.len(), 340.0, 156.0, |ui, i, rect| {
+        let b = &builds[i];
+        let channel = Channel::of(&b.name);
+        let running = app.running_of(b).len();
+        let selected = app.selection == Selection::Build(b.name.clone());
+        let resp = ui.interact(rect, ui.id().with(("build", &b.name)), Sense::click());
+        card_bg(ui, &pal, rect, selected, resp.hovered());
+        if resp.clicked() {
+            app.selection = Selection::Build(b.name.clone());
+        }
+        if resp.double_clicked() {
+            app.launch_build(&ctx, &b.name);
+        }
+
+        let p = ui.painter();
+        let x = rect.left() + 12.0;
+        let col = channel_color(&pal, channel);
+        let fg = if col == pal.accent || col == pal.orange { pal.on_accent } else { Color32::WHITE };
+        let br = badge(ui, &pal, egui::pos2(x, rect.top() + 12.0), channel.label(), col, fg);
+        text_clip(ui, egui::pos2(br.right() + 8.0, br.center().y), rect.right() - br.right() - 24.0, &b.name, egui::FontId::proportional(11.5), pal.muted);
+        let version = b.version.clone().unwrap_or_else(|| b.name.clone());
+        p.text(egui::pos2(x, rect.top() + 52.0), Align2::LEFT_CENTER, format!("Blender {version}"), bold(24.0), pal.text);
+        text_clip(ui, egui::pos2(x, rect.top() + 80.0), rect.width() - 24.0, &b.executable.display().to_string(), egui::FontId::proportional(11.0), pal.faint);
+
+        let row = Rect::from_min_max(egui::pos2(x, rect.bottom() - 42.0), egui::pos2(rect.right() - 12.0, rect.bottom() - 12.0));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)), |ui| {
+            if icon_text_button(ui, &pal, I::PLAY, "Launch", true).on_hover_text(format!("Launch with profile '{}'", app.active_profile)).clicked() {
+                app.selection = Selection::Build(b.name.clone());
+                app.launch_build(&ctx, &b.name);
+            }
+            if icon_button(ui, &pal, I::FOLDER_OPEN, "Open build folder", false).clicked() {
+                if let Some(d) = b.executable.parent() {
+                    platform::open_folder(d);
+                }
+            }
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if running > 0 {
+                    let r = ui.label(egui::RichText::new(format!("{running} running")).size(12.0).color(pal.green));
+                    dot(ui, egui::pos2(r.rect.left() - 8.0, r.rect.center().y), 4.0, pal.green);
+                    if r.interact(Sense::click()).on_hover_text("Show running instances").clicked() {
+                        app.set_view(View::Running);
+                    }
+                } else {
+                    ui.label(egui::RichText::new("Not running").size(12.0).color(pal.faint));
+                }
+            });
+        });
+    });
+}
+
+// --------------------------------------------------------------------------------------------
+// Running instances
+
+fn running_view(app: &mut App, ui: &mut Ui) {
+    let pal = app.pal;
+    let ctx = ui.ctx().clone();
+    let list: Vec<_> = app
+        .instances
+        .iter()
+        .filter(|i| app.matches_find(&format!("{} {} {} {}", i.blender_version, i.file, i.profile.as_deref().unwrap_or(""), i.pid)))
+        .cloned()
+        .collect();
+    if list.is_empty() {
+        empty_state(
+            ui,
+            &pal,
+            I::ACTIVITY,
+            "No Blender running",
+            "Blenders launched from Spindle appear here within a few seconds, along with their MCP add-on address",
+        );
+        if !app.builds.is_empty() {
+            ui.vertical_centered(|ui| {
+                if icon_text_button(ui, &pal, I::PLAY, "Launch Newest Build", true).clicked() {
+                    app.launch_newest(&ctx);
+                }
+            });
+        }
+        return;
+    }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+    card_grid(ui, list.len(), 380.0, 150.0, |ui, i, rect| {
+        let inst = &list[i];
+        let selected = app.selection == Selection::Instance(inst.pid);
+        let resp = ui.interact(rect, ui.id().with(("inst", inst.pid)), Sense::click());
+        card_bg(ui, &pal, rect, selected, resp.hovered());
+        if resp.clicked() {
+            app.selection = Selection::Instance(inst.pid);
+        }
+        let p = ui.painter();
+        let x = rect.left() + 12.0;
+        let br = badge(ui, &pal, egui::pos2(x, rect.top() + 12.0), "RUNNING", pal.green, Color32::WHITE);
+        let up = (now - inst.started).max(0.0) as u64;
+        let uptime = if up >= 3600 { format!("{}h {}m", up / 3600, up % 3600 / 60) } else { format!("{}m {}s", up / 60, up % 60) };
+        text_clip(ui, egui::pos2(br.right() + 8.0, br.center().y), rect.width() - 120.0, &format!("pid {} · up {uptime} · profile {}", inst.pid, inst.profile.as_deref().unwrap_or("-")), egui::FontId::proportional(11.5), pal.muted);
+        p.text(egui::pos2(x, rect.top() + 50.0), Align2::LEFT_CENTER, format!("Blender {}", inst.blender_version), bold(22.0), pal.text);
+        let file = if inst.file.is_empty() { "(unsaved file)".to_string() } else { inst.file.clone() };
+        text_clip(ui, egui::pos2(x + 18.0, rect.top() + 78.0), rect.width() - 42.0, &file, egui::FontId::proportional(12.0), pal.text);
+        p.text(egui::pos2(x + 6.0, rect.top() + 78.0), Align2::CENTER_CENTER, I::FILE, icon_font(12.0), pal.muted);
+
+        // MCP endpoint line: what agents need.
+        let y = rect.bottom() - 30.0;
+        match inst.mcp.iter().find(|m| m.port.is_some()) {
+            Some(m) => {
+                let addr = format!("{}:{}", m.host.as_deref().unwrap_or("localhost"), m.port.unwrap_or(0));
+                p.text(egui::pos2(x + 6.0, y), Align2::CENTER_CENTER, I::BOT, icon_font(13.0), pal.accent_text);
+                let shown = p.text(egui::pos2(x + 20.0, y), Align2::LEFT_CENTER, format!("MCP  {addr}"), bold(12.5), pal.accent_text);
+                let name_x = shown.right() + 10.0;
+                text_clip(ui, egui::pos2(name_x, y), rect.right() - 44.0 - name_x, &m.addon, egui::FontId::proportional(11.0), pal.muted);
+                let br = Rect::from_center_size(egui::pos2(rect.right() - 25.0, y), Vec2::splat(26.0));
+                let r = ui.scope_builder(egui::UiBuilder::new().max_rect(br), |ui| icon_button(ui, &pal, I::COPY, "Copy MCP address", false)).inner;
+                if r.clicked() {
+                    ctx.copy_text(addr.clone());
+                    app.toast(&ctx, format!("Copied {addr}"));
+                }
+            }
+            None => {
+                p.text(egui::pos2(x + 6.0, y), Align2::CENTER_CENTER, I::BOT, icon_font(13.0), pal.faint);
+                p.text(egui::pos2(x + 20.0, y), Align2::LEFT_CENTER, "No MCP add-on enabled in this profile", egui::FontId::proportional(12.0), pal.faint);
+            }
+        }
+    });
+}
+
+// --------------------------------------------------------------------------------------------
+// Add-on library
+
+fn addons_view(app: &mut App, ui: &mut Ui) {
+    let pal = app.pal;
+    let ctx = ui.ctx().clone();
+    let list: Vec<_> = app
+        .latest_addons()
+        .into_iter()
+        .filter(|a| app.matches_find(&format!("{} {} {}", a.name, a.id, a.source)))
+        .cloned()
+        .collect();
+    if list.is_empty() {
+        empty_state(
+            ui,
+            &pal,
+            I::PACKAGE,
+            if app.addons.is_empty() { "The add-on library is empty" } else { "No add-ons match" },
+            if app.addons.is_empty() { "Sync your Superhive purchases to download them here" } else { "Clear the search to see every add-on" },
+        );
+        if app.addons.is_empty() {
+            ui.vertical_centered(|ui| {
+                if icon_text_button(ui, &pal, I::DOWNLOAD, "Sync Superhive Purchases", true).clicked() {
+                    app.sync_superhive(&ctx);
+                }
+            });
+        }
+        return;
+    }
+    let versions = |id: &str| app.addons.iter().filter(|a| a.id.eq_ignore_ascii_case(id)).count();
+    let counts: Vec<usize> = list.iter().map(|a| versions(&a.id)).collect();
+    ui.spacing_mut().item_spacing.y = 6.0;
+    for (a, n_versions) in list.iter().zip(counts) {
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 56.0), Sense::hover());
+        let sel = Selection::Addon { source: a.source.clone(), id: a.id.clone(), version: a.version.clone() };
+        let selected = app.selection == sel;
+        let resp = ui.interact(rect, ui.id().with(("addon", &a.source, &a.id)), Sense::click());
+        card_bg(ui, &pal, rect, selected, resp.hovered());
+        if resp.clicked() {
+            app.selection = sel.clone();
+        }
+        let p = ui.painter();
+        let x = rect.left() + 14.0;
+        let icon_rect = Rect::from_center_size(egui::pos2(x + 14.0, rect.center().y), Vec2::splat(32.0));
+        p.rect_filled(icon_rect, CornerRadius::same(6), pal.raised);
+        p.text(icon_rect.center(), Align2::CENTER_CENTER, if a.kind == "theme" { I::PALETTE } else { I::PACKAGE }, icon_font(16.0), pal.accent_text);
+        let tx = icon_rect.right() + 12.0;
+        let text_w = rect.width() * 0.45;
+        text_clip(ui, egui::pos2(tx, rect.center().y - 9.0), text_w, &a.name, bold(14.0), pal.text);
+        let sub = if n_versions > 1 { format!("{} · {} versions stored", a.id, n_versions) } else { a.id.clone() };
+        text_clip(ui, egui::pos2(tx, rect.center().y + 10.0), text_w, &sub, egui::FontId::proportional(11.5), pal.muted);
+
+        let mid = rect.left() + rect.width() * 0.55;
+        let vb = badge(ui, &pal, egui::pos2(mid, rect.center().y - 8.0), &a.version, pal.raised, pal.text);
+        let kb = badge(ui, &pal, egui::pos2(vb.right() + 6.0, rect.center().y - 8.0), &a.kind, Color32::TRANSPARENT, pal.muted);
+        let source = if a.source == "superhive" { "Superhive" } else { a.source.as_str() };
+        ui.painter().text(egui::pos2(kb.right() + 12.0, rect.center().y), Align2::LEFT_CENTER, source, egui::FontId::proportional(12.0), pal.muted);
+
+        let row = Rect::from_min_max(egui::pos2(rect.right() - 150.0, rect.top()), egui::pos2(rect.right() - 12.0, rect.bottom()));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(Layout::right_to_left(Align::Center)), |ui| {
+            let installing = app.busy(&format!("Installing {}", a.id));
+            if installing {
+                ui.add(egui::Spinner::new().size(14.0).color(pal.accent_text));
+            } else if icon_text_button(ui, &pal, I::DOWNLOAD, "Install…", false).on_hover_text("Install into a profile").clicked() {
+                app.selection = sel.clone();
+                let build = app.builds.first().map(|b| b.name.clone()).unwrap_or_default();
+                app.dlg.install = Some((a.id.clone(), build, app.active_profile.clone()));
+            }
+        });
+    }
+}
+
+// --------------------------------------------------------------------------------------------
+// Profiles
+
+/// Installed extensions in a profile (all repositories, hidden folders skipped).
+pub fn count_extensions(profile_dir: &Path) -> usize {
+    let Ok(repos) = std::fs::read_dir(profile_dir.join("extensions")) else { return 0 };
+    repos
+        .flatten()
+        .filter(|r| r.path().is_dir() && !r.file_name().to_string_lossy().starts_with('.'))
+        .map(|r| {
+            std::fs::read_dir(r.path())
+                .map(|it| it.flatten().filter(|e| e.path().is_dir() && !e.file_name().to_string_lossy().starts_with('.')).count())
+                .unwrap_or(0)
+        })
+        .sum()
+}
+
+fn profiles_view(app: &mut App, ui: &mut Ui) {
+    let pal = app.pal;
+    let ctx = ui.ctx().clone();
+    let list: Vec<String> = app.profiles.iter().filter(|p| app.matches_find(p)).cloned().collect();
+    if list.is_empty() {
+        empty_state(ui, &pal, I::USER, "No profiles", "A profile is created the first time a build is launched with it");
+        ui.vertical_centered(|ui| {
+            if icon_text_button(ui, &pal, I::PLUS, "New Profile…", true).clicked() {
+                app.dlg.new_profile = Some(String::new());
+            }
+        });
+        return;
+    }
+    let default = app.sp.profile_name(None);
+    card_grid(ui, list.len(), 320.0, 140.0, |ui, i, rect| {
+        let name = &list[i];
+        let dir = app.profile_dir(name);
+        let selected = app.selection == Selection::Profile(name.clone());
+        let resp = ui.interact(rect, ui.id().with(("profile", name)), Sense::click());
+        card_bg(ui, &pal, rect, selected, resp.hovered());
+        if resp.clicked() {
+            app.selection = Selection::Profile(name.clone());
+        }
+        let x = rect.left() + 12.0;
+        let mut bx = x;
+        if *name == default {
+            bx = badge(ui, &pal, egui::pos2(bx, rect.top() + 12.0), "DEFAULT", pal.accent, pal.on_accent).right() + 6.0;
+        }
+        if *name == app.active_profile {
+            badge(ui, &pal, egui::pos2(bx, rect.top() + 12.0), "LAUNCHING", pal.green, Color32::WHITE);
+        }
+        let p = ui.painter();
+        p.text(egui::pos2(x, rect.top() + 50.0), Align2::LEFT_CENTER, name, bold(22.0), pal.text);
+        let ext = count_extensions(&dir);
+        let prefs = if dir.join("config").join("userpref.blend").is_file() { "saved preferences" } else { "default preferences" };
+        p.text(egui::pos2(x, rect.top() + 76.0), Align2::LEFT_CENTER, format!("{ext} extensions · {prefs}"), egui::FontId::proportional(12.0), pal.muted);
+        let row = Rect::from_min_max(egui::pos2(x, rect.bottom() - 42.0), egui::pos2(rect.right() - 12.0, rect.bottom() - 12.0));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)), |ui| {
+            let active = *name == app.active_profile;
+            if icon_text_button(ui, &pal, if active { I::CIRCLE_CHECK } else { I::CIRCLE }, if active { "Launching with this" } else { "Use for Launching" }, !active).clicked() {
+                app.active_profile = name.clone();
+            }
+            if icon_button(ui, &pal, I::FOLDER_OPEN, "Open profile folder", false).clicked() {
+                platform::open_folder(&dir);
+            }
+            if *name != default && icon_button(ui, &pal, I::STAR, "Make default profile", false).clicked() {
+                app.set_default_profile(&ctx, name);
+            }
+        });
+    });
+}
