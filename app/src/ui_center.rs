@@ -417,7 +417,12 @@ fn profiles_view(app: &mut App, ui: &mut Ui) {
         p.text(egui::pos2(x, rect.top() + 50.0), Align2::LEFT_CENTER, name, bold(22.0), pal.text);
         let ext = count_extensions(&dir);
         let prefs = if dir.join("config").join("userpref.blend").is_file() { "saved preferences" } else { "default preferences" };
-        p.text(egui::pos2(x, rect.top() + 76.0), Align2::LEFT_CENTER, format!("{ext} extensions · {prefs}"), egui::FontId::proportional(12.0), pal.muted);
+        let backups = match app.backups_of(name).len() {
+            0 => String::new(),
+            1 => " · 1 backup".to_owned(),
+            n => format!(" · {n} backups"),
+        };
+        p.text(egui::pos2(x, rect.top() + 76.0), Align2::LEFT_CENTER, format!("{ext} extensions · {prefs}{backups}"), egui::FontId::proportional(12.0), pal.muted);
         let row = Rect::from_min_max(egui::pos2(x, rect.bottom() - 42.0), egui::pos2(rect.right() - 12.0, rect.bottom() - 12.0));
         ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(Layout::left_to_right(Align::Center)), |ui| {
             let active = *name == app.active_profile;
@@ -437,10 +442,10 @@ fn profiles_view(app: &mut App, ui: &mut Ui) {
 // --------------------------------------------------------------------------------------------
 // Download builds
 
-fn fmt_size(bytes: Option<u64>) -> String {
+pub fn fmt_size(bytes: Option<u64>) -> String {
     match bytes {
         Some(b) if b >= 1_000_000 => format!("{} MB", b / 1_000_000),
-        Some(b) => format!("{} KB", b / 1000),
+        Some(b) => format!("{} KB", b.div_ceil(1000)),
         None => String::new(),
     }
 }

@@ -35,6 +35,8 @@ fn main() -> eframe::Result {
     let start_in_tray = args.iter().any(|a| a == "--tray");
     // Open the profile-compatibility dialog for a build (for screenshots).
     let mut show_compat: Option<String> = None;
+    // Open a profile's backups dialog (for screenshots).
+    let mut show_backups: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
         let next = args.get(i + 1).map(|s| s.to_lowercase());
@@ -51,6 +53,7 @@ fn main() -> eframe::Result {
                 }
             }
             ("--show-compat", Some(_)) => show_compat = Some(args[i + 1].clone()),
+            ("--show-backups", Some(_)) => show_backups = Some(args[i + 1].clone()),
             ("--theme", Some(t)) => theme = if t == "light" { Some(theme::ThemeMode::Light) } else { Some(theme::ThemeMode::Dark) },
             _ => {
                 i += 1;
@@ -133,6 +136,10 @@ fn main() -> eframe::Result {
                         a.dlg.compat = Some(app::CompatDialog { build: b.name, report });
                     }
                 }
+            }
+            if let Some(p) = &show_backups {
+                a.selection = app::Selection::Profile(p.clone());
+                a.dlg.backups = Some(p.clone());
             }
             Ok(Box::new(a))
         }),

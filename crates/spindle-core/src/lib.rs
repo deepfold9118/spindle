@@ -3,6 +3,7 @@
 //! downloads and profile compatibility checks.
 
 pub mod addons;
+pub mod backup;
 pub mod blendfile;
 pub mod builds;
 pub mod compat;

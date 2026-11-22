@@ -103,7 +103,7 @@ try {
     Set-Content -Encoding utf8NoBOM $env:SPINDLE_CONFIG "library_dir = '$Library'`nfavourites = [`"blender-5.3.0-stable.02f0899d78e3`"]`n"
     Write-Json (Join-Path $Library "run\instances\24816.json") ([ordered]@{
         pid = 24816; blender_version = "5.3.0"; binary = (Join-Path $Library "builds\blender-5.3.0-stable.02f0899d78e3\blender.exe")
-        profile = "default"; file = "C:\Projects\robot-arm\robot_arm_v12.blend"; started = $now - 4000
+        profile = "studio"; file = "C:\Projects\robot-arm\robot_arm_v12.blend"; started = $now - 4000
         heartbeat = $now + 3600; mcp = @(@{ addon = "blender_mcp"; host = "127.0.0.1"; port = 9876 })
     })
     $runDir = Join-Path $Library "run"
@@ -113,6 +113,12 @@ try {
         & $cli builds available --refresh | Out-Null
     }
 
+    # --- preference backups: two by hand, and the automatic one a restore makes ------------------
+    $first = & $cli profiles backup default --note "Before trying the new keymap"
+    & $cli profiles backup default --full --note "Studio setup" | Out-Null
+    $firstId = ([regex]::Match(($first -join ' '), "to (\S+) \(")).Groups[1].Value
+    & $cli profiles restore $firstId | Out-Null
+
     # --- pictures -----------------------------------------------------------------------------
     $null = New-Item -ItemType Directory -Force $out
     $shots = @(
@@ -121,7 +127,8 @@ try {
         @("running", "dark", "running.png", @()),
         @("downloads", "dark", "downloads.png", @()),
         @("addons", "dark", "addons.png", @()),
-        @("builds", "dark", "compatibility.png", @("--show-compat", "blender-4.1.1-stable"))
+        @("builds", "dark", "compatibility.png", @("--show-compat", "blender-4.1.1-stable")),
+        @("profiles", "dark", "backups.png", @("--show-backups", "default"))
     )
     foreach ($s in $shots) {
         $png = Join-Path $out $s[2]

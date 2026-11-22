@@ -17,6 +17,7 @@ use spindle_core::compat::{self, Report};
 use spindle_core::downloads::{self, Available, Catalog, Progress, Update};
 use spindle_core::instances::{self, Instance};
 use spindle_core::profile::Profile;
+use spindle_core::backup::{self, Backup};
 use spindle_core::{Spindle, launch, superhive};
 
 use crate::theme::{self, Palette, ThemeMode};
@@ -152,6 +153,10 @@ pub struct Dialogs {
     pub remove: Option<String>,
     /// "Spindle updates" dialog.
     pub self_update: bool,
+    /// Backups dialog, by profile name.
+    pub backups: Option<String>,
+    /// Restore confirmation inside the backups dialog, by backup id.
+    pub restore: Option<String>,
 }
 
 pub struct App {
@@ -169,6 +174,8 @@ pub struct App {
     pub instances: Vec<Instance>,
     pub addons: Vec<AddonRecord>,
     pub profiles: Vec<String>,
+    /// Preference backups of every profile, newest first.
+    pub backups: Vec<Backup>,
     pub token_stored: bool,
     pub load_error: Option<String>,
 
@@ -232,6 +239,7 @@ impl App {
             instances: Vec::new(),
             addons: Vec::new(),
             profiles: Vec::new(),
+            backups: Vec::new(),
             token_stored: false,
             load_error: None,
             selection: Selection::None,
@@ -287,6 +295,7 @@ impl App {
         self.builds = builds::list(&self.sp).unwrap_or_default();
         self.addons = AddonLibrary::new(&self.sp).list().unwrap_or_default();
         self.profiles = Profile::list(&self.sp).unwrap_or_default();
+        self.backups = backup::list(&self.sp, None).unwrap_or_default();
         if !self.profiles.contains(&self.active_profile) {
             self.active_profile = self.sp.profile_name(None);
         }
@@ -455,6 +464,50 @@ impl App {
             let _ = tx.send(work());
         });
         self.jobs.push(Job { label: label.to_owned(), rx, progress });
+    }
+
+    pub fn backups_of(&self, profile: &str) -> Vec<&Backup> {
+        self.backups.iter().filter(|b| b.meta.profile == profile).collect()
+    }
+
+    /// Back up a profile's preferences (`full`: the whole profile) in the background.
+    pub fn back_up_profile(&mut self, name: &str, full: bool) {
+        let label = format!("Backing up {name}");
+        if self.busy(&label) {
+            return;
+        }
+        let name = name.to_owned();
+        self.spawn(&label, move || {
+            let sp = Spindle::load().map_err(|e| format!("{e:#}"))?;
+            let profile = Profile::open(&sp, &name).map_err(|e| format!("{e:#}"))?;
+            let b = backup::create(&sp, &profile, full, backup::Kind::Manual, "").map_err(|e| format!("{e:#}"))?;
+            let what = if full { "the whole profile" } else { "the preferences" };
+            Ok(format!("Backed up {what} of '{name}' ({})", crate::ui_center::fmt_size(Some(b.size))))
+        });
+    }
+
+    /// Restore a backup into its profile in the background.
+    pub fn restore_backup(&mut self, id: &str) {
+        let label = format!("Restoring {id}");
+        if self.busy(&label) {
+            return;
+        }
+        let id = id.to_owned();
+        self.spawn(&label, move || {
+            let sp = Spindle::load().map_err(|e| format!("{e:#}"))?;
+            let b = backup::find(&sp, &id).map_err(|e| format!("{e:#}"))?;
+            backup::restore(&sp, &b, None, false).map_err(|e| format!("{e:#}"))?;
+            Ok(format!("Restored '{}' from {}; what it replaced was backed up first", b.meta.profile, b.when()))
+        });
+    }
+
+    pub fn remove_backup(&mut self, ctx: &egui::Context, id: &str) {
+        let Some(b) = self.backups.iter().find(|b| b.id == id).cloned() else { return };
+        match backup::remove(&b) {
+            Ok(()) => self.toast(ctx, format!("Backup from {} moved to the Recycle Bin", b.when())),
+            Err(e) => self.toast(ctx, format!("Error: {e:#}")),
+        }
+        self.backups = backup::list(&self.sp, None).unwrap_or_default();
     }
 
     pub fn download_progress(&self, name: &str) -> Option<Arc<Progress>> {

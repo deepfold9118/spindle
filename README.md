@@ -82,6 +82,10 @@ to launch builds. Star favourites; the first one is the default. It can update i
 </tr>
 </table>
 
+**Preference backups**: back up a profile's preferences (or the whole profile, add-ons
+included) and restore any backup later. Spindle backs the preferences up by itself before an
+older Blender opens them, and every restore backs up what it replaces first.
+
 Superhive purchases can be downloaded into Spindle's add-on library and installed into any
 profile; the API token stays in the OS credential store.
 
@@ -92,6 +96,8 @@ profile; the API token stays in the OS credential store.
 | <img src="docs/screenshots/downloads.png" alt="Download Builds"> | <img src="docs/screenshots/running.png" alt="Running Blenders"> |
 | **Profile compatibility check** | **Light theme** |
 | <img src="docs/screenshots/compatibility.png" alt="Profile compatibility dialog"> | <img src="docs/screenshots/builds-light.png" alt="Light theme"> |
+| **Preference backups** | **Add-on library** |
+| <img src="docs/screenshots/backups.png" alt="Backups dialog"> | <img src="docs/screenshots/addons.png" alt="Add-on library"> |
 
 ## Install
 
@@ -188,6 +194,25 @@ Builds older than 3.6 ignore `BLENDER_USER_RESOURCES` (verified with 2.93), so S
 `BLENDER_USER_CONFIG`, `BLENDER_USER_SCRIPTS` and `BLENDER_USER_DATAFILES` for them.
 `spindle launch` and the MCP `launch_blender` tool refuse a blocker unless forced.
 
+## Preference backups
+
+A preferences backup is a zip of the profile's `config/` folder: `userpref.blend`,
+`startup.blend`, bookmarks and recent files. A whole-profile backup adds the add-ons,
+extensions and everything else in the profile. Backups live in the library's `backups/` folder.
+
+- **By hand**: **Back Up Preferences** or **Back Up Whole Profile** in the Task Panel when a
+  profile is selected, or `spindle profiles backup [<profile>] [--full] [--note "…"]`.
+- **Automatically**: before any launch (app, tray, command line or MCP) where a build older than
+  the Blender that saved the preferences opens them, unless they haven't changed since the last
+  backup. The newest ten automatic backups of each profile are kept; ones made by hand stay
+  until you remove them.
+- **Restoring**: **Restore Preferences…** lists a profile's backups. A preferences backup
+  replaces `config/`; a whole-profile backup replaces the whole profile. What it replaces is
+  backed up first, so a restore can be undone the same way. Spindle won't restore while a
+  Blender is running with the profile, since that Blender would save its own preferences over
+  the restored ones on exit. `spindle profiles restore <backup> [--into <profile>]` restores
+  from the command line, into another profile too.
+
 When a `.blend` file is opened with Spindle it goes to a build of the series that saved it (a
 favourite first), else the default build, else the oldest newer build, skipping builds the
 profile blocks. A file newer than every build asks first.
@@ -206,6 +231,11 @@ spindle launch [<build>] [--profile default] [--force] [-- blender args]
 spindle open <file.blend> [--build <build>] [--dry-run]
 spindle check <build> [--profile default] [--json]
 spindle instances [--json]
+spindle profiles                        # list profiles
+spindle profiles backup [<profile>] [--full] [--note "…"]
+spindle profiles backups [<profile>] [--json]
+spindle profiles restore <backup> [--into <profile>] [--force]   # a backup id, or a profile for its newest
+spindle profiles remove-backup <backup>
 spindle desktop [--autostart on|off] [--open-blend on|off] [--path on|off]
 spindle self-update [--check]
 spindle superhive login | list | sync
@@ -224,6 +254,7 @@ builds/<name>/                       one folder per build (blender.exe, or Blend
 builds/<name>/spindle-build.json     where a downloaded build came from (channel, branch, commit)
 profiles/<name>/                     same layout as Blender's own config folder for a version
 addons/<source>/<id>/<version>/      add-on archives with addon.json
+backups/<profile>/<id>.zip           preference and whole-profile backups
 downloads/                           partial build downloads
 run/                                 running-instance heartbeats, cached build listings
 ```

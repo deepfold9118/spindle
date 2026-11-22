@@ -4,7 +4,7 @@ use spindle_core::addons::AddonLibrary;
 use spindle_core::profile::Profile;
 use spindle_core::builds::Channel;
 use spindle_core::downloads::{self, Available, Progress};
-use spindle_core::{Spindle, blendfile, builds, compat, desktop, instances, launch, superhive};
+use spindle_core::{Spindle, backup, blendfile, builds, compat, desktop, instances, launch, superhive};
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -24,8 +24,11 @@ enum Cmd {
     SetLibrary { dir: PathBuf },
     #[command(subcommand)]
     Builds(BuildsCmd),
-    /// List profiles.
-    Profiles,
+    /// List profiles, and back up or restore their preferences.
+    Profiles {
+        #[command(subcommand)]
+        cmd: Option<ProfilesCmd>,
+    },
     /// Launch a build with a shared profile.
     Launch {
         /// Build name, or a version like "5.3". Defaults to the first favourite, else the newest build.
@@ -135,6 +138,42 @@ enum BuildsCmd {
         #[arg(long)]
         remove: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum ProfilesCmd {
+    /// List profiles.
+    List,
+    /// Back up a profile's preferences (its config folder).
+    Backup {
+        /// Profile name. Defaults to the default profile.
+        profile: Option<String>,
+        /// Back up the whole profile, add-ons and extensions included.
+        #[arg(long)]
+        full: bool,
+        /// A note to recognise the backup by.
+        #[arg(long, default_value = "")]
+        note: String,
+    },
+    /// List backups, newest first.
+    Backups {
+        profile: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Restore a backup (by id, or a profile name for its newest backup). What it replaces is
+    /// backed up first.
+    Restore {
+        backup: String,
+        /// Restore into another profile instead (created if needed).
+        #[arg(long)]
+        into: Option<String>,
+        /// Restore even while Blender runs with the profile.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Move a backup to the Recycle Bin / Trash.
+    RemoveBackup { backup: String },
 }
 
 #[derive(Subcommand)]
@@ -258,11 +297,52 @@ fn main() -> Result<()> {
                 print_report(&report);
             }
         }
-        Cmd::Profiles => {
-            for p in Profile::list(&sp)? {
-                println!("{p}");
+        Cmd::Profiles { cmd } => match cmd.unwrap_or(ProfilesCmd::List) {
+            ProfilesCmd::List => {
+                for p in Profile::list(&sp)? {
+                    println!("{p}");
+                }
             }
-        }
+            ProfilesCmd::Backup { profile, full, note } => {
+                let name = sp.profile_name(profile.as_deref());
+                if !Profile::list(&sp)?.contains(&name) {
+                    bail!("no profile '{name}'");
+                }
+                let profile = Profile::open(&sp, &name)?;
+                let b = backup::create(&sp, &profile, full, backup::Kind::Manual, &note)?;
+                println!("backed up {} of '{}' to {} ({})", if full { "the whole profile" } else { "the preferences" }, name, b.id, size(b.size));
+            }
+            ProfilesCmd::Backups { profile, json } => {
+                let list = backup::list(&sp, profile.as_deref())?;
+                if json {
+                    println!("{}", serde_json_pretty(&list)?);
+                } else if list.is_empty() {
+                    println!("no backups yet (spindle profiles backup <profile>)");
+                } else {
+                    for b in list {
+                        let what = if b.meta.full { "full" } else { "prefs" };
+                        let kind = if b.meta.kind == backup::Kind::Automatic { "auto" } else { "" };
+                        let by = b.meta.saved_by.as_deref().map(|v| format!("Blender {v}")).unwrap_or_default();
+                        println!("{:<34} {}  {what:<5} {kind:<4} {:>9}  {by:<12} {}", b.id, b.when(), size(b.size), b.meta.note);
+                    }
+                }
+            }
+            ProfilesCmd::Restore { backup: query, into, force } => {
+                let b = backup::find(&sp, &query)?;
+                let undo = backup::restore(&sp, &b, into.as_deref(), force)?;
+                let target = into.as_deref().unwrap_or(&b.meta.profile);
+                println!("restored {} into profile '{target}'", b.id);
+                println!("what it replaced is in backup {} (spindle profiles restore {} to undo)", undo.id, undo.id);
+            }
+            ProfilesCmd::RemoveBackup { backup: query } => {
+                let b = backup::find(&sp, &query)?;
+                if b.id != query {
+                    bail!("give the backup's id to remove it (the newest of '{query}' is {})", b.id);
+                }
+                backup::remove(&b)?;
+                println!("moved {} to the Recycle Bin", b.id);
+            }
+        },
         Cmd::Launch { build, profile, force, args } => {
             let build = match build {
                 Some(q) => builds::find(&sp, &q)?,
@@ -537,6 +617,14 @@ fn print_report(r: &compat::Report) {
             compat::Severity::Info => "info",
         };
         println!("  [{tag}] {}\n      {}", i.title, i.detail);
+    }
+}
+
+fn size(bytes: u64) -> String {
+    match bytes {
+        b if b >= 1 << 30 => format!("{:.1} GB", b as f64 / (1u64 << 30) as f64),
+        b if b >= 1 << 20 => format!("{:.1} MB", b as f64 / (1u64 << 20) as f64),
+        b => format!("{} KB", b.div_ceil(1024)),
     }
 }
 

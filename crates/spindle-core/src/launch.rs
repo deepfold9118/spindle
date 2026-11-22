@@ -36,7 +36,10 @@ fn stop_stdio_inheritance() {
 }
 
 /// Start an interactive Blender, detached from Spindle. Returns the process id.
+/// Preferences a newer Blender saved are backed up first (see `backup::before_launch`).
 pub fn launch(sp: &Spindle, build: &Build, profile: &Profile, args: &[String]) -> Result<u32> {
+    // A failed backup doesn't stop the launch; the compatibility check has already warned.
+    let _ = crate::backup::before_launch(sp, build, profile);
     #[cfg(windows)]
     stop_stdio_inheritance();
     let mut cmd = command(sp, build, profile, args)?;

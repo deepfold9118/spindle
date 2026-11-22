@@ -13,6 +13,123 @@ pub fn dialogs(app: &mut App, ctx: &egui::Context) {
     compat(app, ctx);
     remove(app, ctx);
     self_update(app, ctx);
+    backups(app, ctx);
+}
+
+/// A profile's backups: restore one (after confirming) or move it to the Recycle Bin.
+fn backups(app: &mut App, ctx: &egui::Context) {
+    let Some(profile) = app.dlg.backups.clone() else { return };
+    let pal = app.pal;
+    let list: Vec<spindle_core::backup::Backup> = app.backups_of(&profile).into_iter().cloned().collect();
+    let running = app.instances.iter().filter(|i| i.profile.as_deref() == Some(profile.as_str())).count();
+    let restoring = app.jobs.iter().any(|j| j.label.starts_with("Restoring "));
+    let mut close = false;
+    let mut restore: Option<String> = None;
+    let mut remove: Option<String> = None;
+    egui::Modal::new(egui::Id::new("m_backups")).show(ctx, |ui| {
+        ui.set_width(560.0);
+        ui.label(egui::RichText::new(format!("Backups of '{profile}'")).font(bold(15.0)));
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(
+                "Restoring replaces the profile's preferences (a whole-profile backup replaces its add-ons and \
+                 extensions too). What it replaces is backed up first, so a restore can be undone.",
+            )
+            .size(12.0)
+            .color(pal.muted),
+        );
+        if running > 0 {
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(if running == 1 {
+                    "A Blender is running with this profile. Close it before restoring, or it saves its preferences over the restored ones.".to_owned()
+                } else {
+                    format!("{running} Blenders are running with this profile. Close them before restoring, or they save their preferences over the restored ones.")
+                })
+                .size(12.0)
+                .color(pal.red),
+            );
+        }
+        ui.add_space(8.0);
+        if list.is_empty() {
+            ui.label(egui::RichText::new("No backups yet.").size(12.0).color(pal.muted));
+        }
+        egui::ScrollArea::vertical().max_height(340.0).auto_shrink([false, true]).show(ui, |ui| {
+            for b in &list {
+                let confirming = app.dlg.restore.as_deref() == Some(b.id.as_str());
+                egui::Frame::new()
+                    .fill(if confirming { pal.accent_soft } else { pal.card })
+                    .stroke(egui::Stroke::new(1.0, pal.border))
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new(b.when()).font(bold(13.0)).color(pal.text));
+                                    let what = if b.meta.full { "WHOLE PROFILE" } else { "PREFERENCES" };
+                                    ui.label(egui::RichText::new(what).size(10.0).color(pal.muted));
+                                    if b.meta.kind == spindle_core::backup::Kind::Automatic {
+                                        ui.label(egui::RichText::new("AUTOMATIC").size(10.0).color(pal.accent_text));
+                                    }
+                                });
+                                let mut detail = Vec::new();
+                                if !b.meta.note.is_empty() {
+                                    detail.push(b.meta.note.clone());
+                                }
+                                if let Some(v) = &b.meta.saved_by {
+                                    detail.push(format!("saved by Blender {v}"));
+                                }
+                                detail.push(crate::ui_center::fmt_size(Some(b.size)));
+                                ui.label(egui::RichText::new(detail.join(" · ")).size(11.0).color(pal.muted));
+                                if confirming {
+                                    let what = if b.meta.full { "the whole profile" } else { "the current preferences" };
+                                    ui.label(egui::RichText::new(format!("Replace {what} with this backup?")).size(12.0).color(pal.text));
+                                }
+                            });
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if confirming {
+                                    if ui.button("Cancel").clicked() {
+                                        app.dlg.restore = None;
+                                    }
+                                    if ui.add_enabled_ui(running == 0 && !restoring, |ui| icon_text_button(ui, &pal, I::HISTORY, "Restore", true)).inner.clicked() {
+                                        restore = Some(b.id.clone());
+                                    }
+                                } else {
+                                    if icon_button(ui, &pal, I::TRASH_2, "Move this backup to the Recycle Bin", false).clicked() {
+                                        remove = Some(b.id.clone());
+                                    }
+                                    if ui.add_enabled(running == 0 && !restoring, egui::Button::new("Restore…")).clicked() {
+                                        app.dlg.restore = Some(b.id.clone());
+                                    }
+                                }
+                            });
+                        });
+                    });
+                ui.add_space(6.0);
+            }
+        });
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if icon_text_button(ui, &pal, I::ARCHIVE, "Back Up Now", false).clicked() {
+                app.back_up_profile(&profile, false);
+            }
+            if ui.button("Close").clicked() {
+                close = true;
+            }
+        });
+    });
+    if let Some(id) = restore {
+        app.restore_backup(&id);
+        app.dlg.restore = None;
+        app.dlg.backups = None;
+    } else if let Some(id) = remove {
+        app.remove_backup(ctx, &id);
+    } else if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.dlg.backups = None;
+        app.dlg.restore = None;
+    }
 }
 
 /// Help > Spindle Updates: the newest release, and Install and Restart.

@@ -314,6 +314,25 @@ fn tasks(app: &mut App, ui: &mut egui::Ui) {
                 if task_row(ui, &pal, I::FOLDER_OPEN, None, "Open Profile Folder", true).clicked() {
                     platform::open_folder(&app.profile_dir(&name));
                 }
+                let backing_up = app.busy(&format!("Backing up {name}"));
+                if task_row(ui, &pal, I::ARCHIVE, None, "Back Up Preferences", !backing_up)
+                    .on_hover_text("Save a copy of the preferences: userpref.blend, the startup file, bookmarks and recent files")
+                    .clicked()
+                {
+                    app.back_up_profile(&name, false);
+                }
+                if task_row(ui, &pal, I::FILE_BOX, None, "Back Up Whole Profile", !backing_up)
+                    .on_hover_text("The preferences plus every add-on and extension in the profile (larger)")
+                    .clicked()
+                {
+                    app.back_up_profile(&name, true);
+                }
+                let n = app.backups_of(&name).len();
+                let label = if n == 0 { "Restore Preferences…".to_owned() } else { format!("Restore Preferences… ({n})") };
+                if task_row(ui, &pal, I::HISTORY, None, &label, n > 0).on_hover_text("Pick a backup to restore").clicked() {
+                    app.dlg.backups = Some(name.clone());
+                    app.dlg.restore = None;
+                }
             });
         }
         Selection::None => {}
@@ -503,6 +522,12 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
             let dir = app.profile_dir(p);
             kv(ui, &pal, "Extensions", &crate::ui_center::count_extensions(&dir).to_string());
             kv(ui, &pal, "Preferences", if dir.join("config").join("userpref.blend").is_file() { "Saved" } else { "Defaults" });
+            let backups = app.backups_of(p);
+            let summary = match backups.first() {
+                Some(b) => format!("{} (newest {})", backups.len(), b.when()),
+                None => "None yet".to_owned(),
+            };
+            kv(ui, &pal, "Backups", &summary);
             kv(ui, &pal, "Bridge", if dir.join("scripts").join("startup").join("spindle_bridge.py").is_file() { "Installed" } else { "Added on first launch" });
             ui.add_space(4.0);
             ui.label(egui::RichText::new(dir.display().to_string()).size(11.0).color(pal.muted));

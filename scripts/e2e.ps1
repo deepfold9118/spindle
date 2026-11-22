@@ -24,6 +24,10 @@
    13. PATH: the debug folder is added to the user Path and removed again, leaving the value
        (and its REG_EXPAND_SZ type) exactly as it was; install.ps1 installs a copy of the debug
        programs into a temporary folder, puts it on PATH and uninstalls it again
+   14. preference backups: the throwaway profile's preferences (a copy of the default profile's
+       when it has none) are backed up, overwritten, restored byte for byte, with the replaced
+       file kept in an automatic backup; a whole-profile backup restores into a second profile
+       with its extensions
   Everything runs in a throwaway profile ("e2e-<random>") that is deleted at the end;
   the default profile is never touched. Downloading a whole build is not repeated here
   (400 MB each); run `spindle builds download <version>` to exercise it.
@@ -114,6 +118,8 @@ try {
     $info = & $spindle info
     $library = (($info | Select-String '^library:') -replace '^library:\s*', '').Trim()
     $testProfileDir = Join-Path $library "profiles\$testProfile"
+    # Backups that exist before this run; any made during it are removed at the end.
+    $backupsBefore = @(& $spindle profiles backups --json | ConvertFrom-Json | ForEach-Object id)
     $builds = & $spindle builds list --json | ConvertFrom-Json
     Add-Result "builds found" ($builds.Count -gt 0) (($builds | ForEach-Object name) -join ", ")
     if ($builds.Count -eq 0) { throw "no builds in $library" }
@@ -371,6 +377,54 @@ try {
         if ((& $rawPath) -ne $pathBefore) { & $spindle desktop --app $appExe --path off | Out-Null }
         if ($pkg) { Remove-Item $pkg -Recurse -Force -ErrorAction SilentlyContinue }
         if ($dest -and (Test-Path $dest)) { & (Join-Path $root "scripts\install.ps1") -Dir $dest -Uninstall | Out-Null }
+    }
+
+    # --- 14. preference backups ------------------------------------------------
+    $copyProfile = "$testProfile-copy"
+    try {
+        $prefs = Join-Path $testProfileDir "config\userpref.blend"
+        if (-not (Test-Path $prefs)) {
+            $null = New-Item -ItemType Directory -Force (Split-Path $prefs)
+            Copy-Item (Join-Path $library "profiles\default\config\userpref.blend") $prefs
+        }
+        $original = (Get-FileHash $prefs).Hash
+        $made = & $spindle profiles backup $testProfile --note e2e
+        $id = ([regex]::Match(($made -join ' '), "to (\S+) \(")).Groups[1].Value
+        Add-Result "backup: preferences backed up" ([bool]$id) ($made -join ' ')
+        [IO.File]::WriteAllBytes($prefs, [byte[]](1..64))
+        $restored = & $spindle profiles restore $id 2>&1
+        $list = @(& $spindle profiles backups $testProfile --json | ConvertFrom-Json)
+        $undo = $list | Where-Object { $_.kind -eq 'automatic' -and $_.note -like "Before restoring the backup from *" }
+        Add-Result "backup: restored byte for byte" ((Get-FileHash $prefs).Hash -eq $original) ($restored -join '; ')
+        Add-Result "backup: replaced preferences kept in an automatic backup" ([bool]$undo -and $list.Count -eq 2) "$($list.Count) backup(s)"
+
+        $full = & $spindle profiles backup $testProfile --full
+        $fullId = ([regex]::Match(($full -join ' '), "to (\S+) \(")).Groups[1].Value
+        & $spindle profiles restore $fullId --into $copyProfile | Out-Null
+        $copyDir = Join-Path $library "profiles\$copyProfile"
+        # Backups leave out __pycache__ (Python rebuilds it).
+        $countFiles = { param($d) @(Get-ChildItem $d -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notmatch '\\__pycache__\\' }).Count }
+        $exts = & $countFiles (Join-Path $testProfileDir "extensions")
+        $copied = & $countFiles (Join-Path $copyDir "extensions")
+        $ok = ((Get-FileHash (Join-Path $copyDir "config\userpref.blend")).Hash -eq $original) -and $copied -eq $exts -and (Test-Path (Join-Path $copyDir "scripts\startup\spindle_bridge.py"))
+        Add-Result "backup: whole profile restored into another profile" $ok "$copied of $exts extension file(s)"
+
+        # Opening a .blend (section 11) with an older build than the one that saved the default
+        # profile's preferences backs them up first.
+        $made = @(& $spindle profiles backups --json | ConvertFrom-Json | Where-Object { $backupsBefore -notcontains $_.id -and $_.profile -notlike "$testProfile*" })
+        $auto = $made | Where-Object { $_.kind -eq 'automatic' -and $_.note -like 'Before Blender*' } | Select-Object -First 1
+        if ($auto) { Add-Result "backup: automatic before an older build opened newer preferences" $true "$($auto.profile): $($auto.note)" }
+        else { Add-Result "backup: automatic before an older build opened newer preferences" $null "skipped: no launch here opened newer preferences with an older build" }
+    } finally {
+        # Leave the library as it was: drop backups this run made of real profiles.
+        @(& $spindle profiles backups --json | ConvertFrom-Json | Where-Object { $backupsBefore -notcontains $_.id }) | ForEach-Object { Remove-Item $_.path -Force -ErrorAction SilentlyContinue }
+        Get-ChildItem (Join-Path $library "backups") -Directory -ErrorAction SilentlyContinue | Where-Object { -not (Get-ChildItem $_.FullName -Force) } | Remove-Item -Force
+        foreach ($p in $testProfile, $copyProfile) {
+            Remove-Item (Join-Path $library "backups\$p") -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Remove-Item (Join-Path $library "profiles\$copyProfile") -Recurse -Force -ErrorAction SilentlyContinue
+        $backupsRoot = Join-Path $library "backups"
+        if ((Test-Path $backupsRoot) -and -not (Get-ChildItem $backupsRoot -Force)) { Remove-Item $backupsRoot -Force }
     }
 } finally {
     if ($testProfileDir -and (Test-Path $testProfileDir)) { Remove-Item $testProfileDir -Recurse -Force }

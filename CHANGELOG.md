@@ -1,7 +1,16 @@
 # Changelog
 
-## [Unreleased]
+## [0.1.3] - 2026-11-22
 
+- **Preference backups**: back up a profile's preferences (`config/`: userpref.blend, the
+  startup file, bookmarks, recent files) or the whole profile with its add-ons and extensions,
+  and restore any backup later, from the Task Panel (Back Up Preferences, Back Up Whole Profile,
+  Restore Preferences…) or `spindle profiles backup | backups | restore | remove-backup`.
+  Restoring backs up what it replaces first, and waits until no Blender is running with the
+  profile. A backup can also be restored into another profile.
+- **Automatic backups**: before a build older than the Blender that saved a profile's
+  preferences opens them, Spindle backs them up (the newest ten automatic backups per profile
+  are kept). The compatibility warnings say so.
 - Upgrading (the installer, or Help > Spindle Updates) asks Windows to refresh its icon cache,
   so the taskbar shows the new release's icon instead of a cached older one.
 

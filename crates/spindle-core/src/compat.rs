@@ -196,7 +196,8 @@ pub fn check(build: &Build, profile_name: &str, profile_root: &Path) -> Report {
                              blend file\", so it starts with factory preferences: none of the {enabled} add-ons and \
                              extensions enabled in this profile, and no keymap or theme changes. If it then saves \
                              preferences (auto-save on exit), the shared profile is overwritten with those defaults \
-                             for every build.",
+                             for every build. Spindle backs the preferences up before launching it; restore them \
+                             from the profile's backups.",
                             fmt(h.series),
                             fmt(READS_NEW_BLEND_FORMAT)
                         ),
@@ -208,7 +209,8 @@ pub fn check(build: &Build, profile_name: &str, profile_root: &Path) -> Report {
                         detail: format!(
                             "Blender {v} reads the settings it knows and ignores ones added after {v}. If it saves \
                              preferences (auto-save on exit), the newer settings are dropped from the shared profile \
-                             for every build."
+                             for every build. Spindle backs the preferences up before launching it; restore them \
+                             from the profile's backups."
                         ),
                     });
                 }
