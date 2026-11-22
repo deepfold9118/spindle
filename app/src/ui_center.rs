@@ -20,6 +20,7 @@ pub fn center(app: &mut App, ui: &mut Ui) {
             View::Running => running_view(app, ui),
             View::Addons => addons_view(app, ui),
             View::Profiles => profiles_view(app, ui),
+            View::Downloads => downloads_view(app, ui),
         });
     });
 }
@@ -87,7 +88,24 @@ fn channel_color(pal: &Palette, c: Channel) -> Color32 {
         Channel::Lts => pal.accent,
         Channel::Stable => pal.green,
         Channel::Daily => pal.blue,
-        Channel::Experimental | Channel::Other => pal.grey,
+        Channel::Experimental | Channel::Custom => pal.grey,
+    }
+}
+
+/// Text colour on a channel badge.
+fn channel_fg(pal: &Palette, c: Channel) -> Color32 {
+    let col = channel_color(pal, c);
+    if col == pal.accent || col == pal.orange { pal.on_accent } else { Color32::WHITE }
+}
+
+/// Compatibility marker for a build: (icon, colour, tooltip) when there's something to say.
+pub fn compat_marker(app: &App, build: &str) -> Option<(&'static str, Color32, String)> {
+    let r = app.compat.get(build)?;
+    let n = r.issues.iter().filter(|i| i.severity >= spindle_core::compat::Severity::Warning).count();
+    match r.worst()? {
+        spindle_core::compat::Severity::Blocker => Some((I::CIRCLE_ALERT, app.pal.red, format!("Can't use profile '{}' safely: {}", r.profile, r.issues[0].title))),
+        spindle_core::compat::Severity::Warning => Some((I::TRIANGLE_ALERT, app.pal.orange, format!("{n} compatibility warning(s) with profile '{}'", r.profile))),
+        spindle_core::compat::Severity::Info => None,
     }
 }
 
@@ -114,7 +132,7 @@ fn builds_view(app: &mut App, ui: &mut Ui) {
     }
     card_grid(ui, builds.len(), 340.0, 156.0, |ui, i, rect| {
         let b = &builds[i];
-        let channel = Channel::of(&b.name);
+        let channel = b.channel;
         let running = app.running_of(b).len();
         let selected = app.selection == Selection::Build(b.name.clone());
         let resp = ui.interact(rect, ui.id().with(("build", &b.name)), Sense::click());
@@ -128,10 +146,20 @@ fn builds_view(app: &mut App, ui: &mut Ui) {
 
         let p = ui.painter();
         let x = rect.left() + 12.0;
-        let col = channel_color(&pal, channel);
-        let fg = if col == pal.accent || col == pal.orange { pal.on_accent } else { Color32::WHITE };
-        let br = badge(ui, &pal, egui::pos2(x, rect.top() + 12.0), channel.label(), col, fg);
-        text_clip(ui, egui::pos2(br.right() + 8.0, br.center().y), rect.right() - br.right() - 24.0, &b.name, egui::FontId::proportional(11.5), pal.muted);
+        let br = badge(ui, &pal, egui::pos2(x, rect.top() + 12.0), channel.label(), channel_color(&pal, channel), channel_fg(&pal, channel));
+        let marker = compat_marker(app, &b.name);
+        let name_w = rect.right() - br.right() - if marker.is_some() { 48.0 } else { 24.0 };
+        text_clip(ui, egui::pos2(br.right() + 8.0, br.center().y), name_w, &b.name, egui::FontId::proportional(11.5), pal.muted);
+        if let Some((icon, col, tip)) = marker {
+            let mr = Rect::from_center_size(egui::pos2(rect.right() - 22.0, br.center().y), Vec2::splat(22.0));
+            let r = ui.interact(mr, ui.id().with(("compat", &b.name)), Sense::click()).on_hover_text(format!("{tip}\nClick for details"));
+            ui.painter().text(mr.center(), Align2::CENTER_CENTER, icon, icon_font(14.0), if r.hovered() { pal.text } else { col });
+            if r.clicked() {
+                if let Some(report) = app.compat.get(&b.name).cloned() {
+                    app.dlg.compat = Some(CompatDialog { build: b.name.clone(), report });
+                }
+            }
+        }
         let version = b.version.clone().unwrap_or_else(|| b.name.clone());
         p.text(egui::pos2(x, rect.top() + 52.0), Align2::LEFT_CENTER, format!("Blender {version}"), bold(24.0), pal.text);
         text_clip(ui, egui::pos2(x, rect.top() + 80.0), rect.width() - 24.0, &b.executable.display().to_string(), egui::FontId::proportional(11.0), pal.faint);
@@ -146,6 +174,11 @@ fn builds_view(app: &mut App, ui: &mut Ui) {
                 if let Some(d) = b.executable.parent() {
                     platform::open_folder(d);
                 }
+            }
+            let removing = app.busy(&format!("Removing {}", b.name));
+            let tip = if b.external { "Remove from Spindle (files stay)" } else { "Remove build (to the Recycle Bin)" };
+            if !removing && icon_button(ui, &pal, I::TRASH_2, tip, false).clicked() {
+                app.dlg.remove = Some(b.name.clone());
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if running > 0 {
@@ -374,4 +407,172 @@ fn profiles_view(app: &mut App, ui: &mut Ui) {
             }
         });
     });
+}
+
+// --------------------------------------------------------------------------------------------
+// Download builds
+
+fn fmt_size(bytes: Option<u64>) -> String {
+    match bytes {
+        Some(b) if b >= 1_000_000 => format!("{} MB", b / 1_000_000),
+        Some(b) => format!("{} KB", b / 1000),
+        None => String::new(),
+    }
+}
+
+/// "3 days ago" style age of a unix timestamp.
+pub fn ago(ts: Option<i64>) -> String {
+    let Some(ts) = ts else { return String::new() };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let s = (now - ts).max(0);
+    match s {
+        0..=3599 => format!("{} min ago", (s / 60).max(1)),
+        3600..=86_399 => format!("{} h ago", s / 3600),
+        86_400..=172_799 => "1 day ago".into(),
+        172_800..=2_591_999 => format!("{} days ago", s / 86_400),
+        2_592_000..=5_183_999 => "1 month ago".into(),
+        _ => format!("{} months ago", s / 2_592_000),
+    }
+}
+
+fn downloads_view(app: &mut App, ui: &mut Ui) {
+    let pal = app.pal;
+    let ctx = ui.ctx().clone();
+
+    // Header: catalog age, refresh, and updates for what's installed.
+    ui.horizontal(|ui| {
+        let fetched = app.catalog.as_ref().map(|c| c.fetched);
+        let label = match fetched {
+            Some(t) => format!("Listings from blender.org, checked {}", ago(Some(t))),
+            None => "Builds from download.blender.org and builder.blender.org".into(),
+        };
+        ui.label(egui::RichText::new(label).size(12.0).color(pal.muted));
+        if app.checking {
+            ui.add(egui::Spinner::new().size(12.0).color(pal.accent_text));
+        } else if icon_text_button(ui, &pal, I::REFRESH_CW, "Check Now", false).clicked() {
+            app.check_updates(&ctx, true);
+        }
+    });
+    if let Some(errs) = app.catalog.as_ref().map(|c| c.errors.clone()).filter(|e| !e.is_empty()) {
+        ui.label(egui::RichText::new(format!("Some sources failed: {}", errs.join("; "))).size(11.5).color(pal.red));
+    }
+    ui.add_space(6.0);
+
+    let updates = app.updates.clone();
+    if !updates.is_empty() {
+        egui::Frame::new().fill(pal.accent_soft).corner_radius(6).inner_margin(egui::Margin::symmetric(12, 10)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(egui::RichText::new(format!("{}  Newer builds available", I::ZAP)).font(bold(13.5)).color(pal.text));
+            ui.add_space(4.0);
+            for u in &updates {
+                ui.horizontal(|ui| {
+                    let what = match &u.installed {
+                        Some(i) => format!("{i}  →  Blender {} ({})", u.available.version, u.available.channel.label()),
+                        None => format!("New {} release: Blender {}", u.available.channel.label(), u.available.version),
+                    };
+                    ui.label(egui::RichText::new(what).size(12.5).color(pal.text));
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| download_control(app, ui, &ctx, &u.available, true));
+                });
+            }
+        });
+        ui.add_space(8.0);
+    }
+
+    let list: Vec<_> = app.visible_available().into_iter().cloned().collect();
+    if list.is_empty() {
+        let none = app.catalog.as_ref().is_none_or(|c| c.builds.is_empty());
+        empty_state(
+            ui,
+            &pal,
+            I::DOWNLOAD,
+            if none { "No listings yet" } else { "No builds match" },
+            if none { "Check blender.org for Stable, LTS, Daily and Experimental builds" } else { "Clear the search or turn on more channels" },
+        );
+        if none && !app.checking {
+            ui.vertical_centered(|ui| {
+                if icon_text_button(ui, &pal, I::REFRESH_CW, "Check for Builds", true).clicked() {
+                    app.check_updates(&ctx, true);
+                }
+            });
+        }
+        return;
+    }
+    ui.spacing_mut().item_spacing.y = 6.0;
+    let groups: [(&str, &[Channel]); 3] = [
+        ("Official releases", &[Channel::Stable, Channel::Lts]),
+        ("Daily builds", &[Channel::Daily]),
+        ("Experimental and patch builds", &[Channel::Experimental]),
+    ];
+    for (title, channels) in groups {
+        let rows: Vec<&spindle_core::downloads::Available> = list.iter().filter(|a| channels.contains(&a.channel)).collect();
+        if rows.is_empty() {
+            continue;
+        }
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new(format!("{title}  ·  {}", rows.len())).font(bold(13.0)).color(pal.accent_text));
+        for a in rows {
+            available_row(app, ui, &ctx, a);
+        }
+        ui.add_space(6.0);
+    }
+}
+
+fn available_row(app: &mut App, ui: &mut Ui, ctx: &egui::Context, a: &spindle_core::downloads::Available) {
+    let pal = app.pal;
+    {
+        let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 52.0), Sense::hover());
+        if !ui.is_rect_visible(rect) {
+            return;
+        }
+        let sel = Selection::Available(a.name.clone());
+        let resp = ui.interact(rect, ui.id().with(("avail", &a.name)), Sense::click());
+        card_bg(ui, &pal, rect, app.selection == sel, resp.hovered());
+        if resp.clicked() {
+            app.selection = sel.clone();
+        }
+        let x = rect.left() + 12.0;
+        let br = badge(ui, &pal, egui::pos2(x, rect.center().y - 9.0), a.channel.label(), channel_color(&pal, a.channel), channel_fg(&pal, a.channel));
+        let tx = x + 104.0;
+        let _ = br;
+        text_clip(ui, egui::pos2(tx, rect.center().y - 8.0), 170.0, &format!("Blender {}", a.version), bold(14.0), pal.text);
+        let sub = if matches!(a.channel, Channel::Stable | Channel::Lts) {
+            format!("{} release", if a.channel == Channel::Lts { "Long-term support" } else { "Official" })
+        } else {
+            format!("{} · {}", a.cycle, a.branch)
+        };
+        text_clip(ui, egui::pos2(tx, rect.center().y + 10.0), rect.width() * 0.42, &sub, egui::FontId::proportional(11.5), pal.muted);
+        let mid = rect.left() + rect.width() * 0.55;
+        ui.painter().text(egui::pos2(mid, rect.center().y), Align2::LEFT_CENTER, format!("{}   {}", fmt_size(a.size), ago(a.published)), egui::FontId::proportional(12.0), pal.muted);
+
+        let row = Rect::from_min_max(egui::pos2(rect.right() - 230.0, rect.top()), egui::pos2(rect.right() - 12.0, rect.bottom()));
+        ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(Layout::right_to_left(Align::Center)), |ui| download_control(app, ui, ctx, a, false));
+    }
+}
+
+/// Download button, progress bar with cancel, or "Installed".
+fn download_control(app: &mut App, ui: &mut Ui, ctx: &egui::Context, a: &spindle_core::downloads::Available, primary: bool) {
+    let pal = app.pal;
+    if let Some(p) = app.download_progress(&a.name) {
+        if icon_button(ui, &pal, I::X, "Cancel download", false).clicked() {
+            app.cancel_download(&a.name);
+        }
+        let (text, frac) = match (p.phase(), p.fraction()) {
+            (spindle_core::downloads::Phase::Downloading, f) => (format!("{:.0}%", f.unwrap_or(0.0) * 100.0), f.unwrap_or(0.0)),
+            (spindle_core::downloads::Phase::Verifying, _) => ("Verifying".into(), 1.0),
+            (spindle_core::downloads::Phase::Extracting, f) => (format!("Unpacking {:.0}%", f.unwrap_or(0.0) * 100.0), f.unwrap_or(0.0)),
+        };
+        ui.add(egui::ProgressBar::new(frac).desired_width(150.0).text(egui::RichText::new(text).size(11.0)).fill(pal.accent));
+    } else if let Some(b) = app.installed_as(a) {
+        let name = b.name.clone();
+        if icon_text_button(ui, &pal, I::PLAY, "Launch", false).on_hover_text(format!("Installed as {name}")).clicked() {
+            app.launch_build(ctx, &name);
+        }
+        ui.label(egui::RichText::new("Installed").size(12.0).color(pal.green));
+        ui.label(egui::RichText::new(I::CIRCLE_CHECK).font(icon_font(12.0)).color(pal.green));
+    } else if icon_text_button(ui, &pal, I::DOWNLOAD, "Download", primary)
+        .on_hover_text(format!("{} from {}", fmt_size(a.size), a.url.split('/').nth(2).unwrap_or("blender.org")))
+        .clicked()
+    {
+        app.start_download(ctx, a.clone());
+    }
 }

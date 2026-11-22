@@ -57,7 +57,8 @@ fn library_tree(app: &mut App, ui: &mut egui::Ui) {
             }
             for (name, version, running) in builds {
                 let selected = view == View::Builds && app.selection == Selection::Build(name.clone());
-                let label = format!("Blender {version} · {}", Channel::of(&name).label());
+                let channel = app.builds.iter().find(|b| b.name == name).map(|b| b.channel).unwrap_or(Channel::Custom);
+                let label = format!("Blender {version} · {}", channel.label());
                 let r = tree_row(ui, &pal, 1, None, I::BOX, &label, if running > 0 { Some(running) } else { None }, selected).0;
                 if r.clicked() {
                     app.set_view(View::Builds);
@@ -73,6 +74,13 @@ fn library_tree(app: &mut App, ui: &mut egui::Ui) {
         let running = app.instances.len();
         if tree_row(ui, &pal, 0, None, I::ACTIVITY, "Running", Some(running), view == View::Running).0.clicked() {
             app.set_view(View::Running);
+        }
+
+        let ups = app.updates.len();
+        let label = if ups > 0 { format!("Download Builds · {ups} new") } else { "Download Builds".to_string() };
+        let n = app.catalog.as_ref().map(|c| c.builds.len());
+        if tree_row(ui, &pal, 0, None, I::DOWNLOAD, &label, n, view == View::Downloads).0.clicked() {
+            app.set_view(View::Downloads);
         }
 
         let addons = app.latest_addons().len();
@@ -180,6 +188,14 @@ fn tasks(app: &mut App, ui: &mut egui::Ui) {
         if task_row(ui, &pal, I::DOWNLOAD, None, if syncing { "Syncing Superhive…" } else { "Sync Superhive Purchases" }, !syncing).clicked() {
             app.sync_superhive(&ctx);
         }
+        let ups = app.updates.len();
+        let label = if ups > 0 { format!("Download Builds ({ups} new)") } else { "Download Builds".to_string() };
+        if task_row(ui, &pal, I::DOWNLOAD, Some(if ups > 0 { pal.accent_text } else { pal.muted }), &label, true).clicked() {
+            app.set_view(View::Downloads);
+        }
+        if task_row(ui, &pal, I::REFRESH_CW, None, if app.checking { "Checking for New Builds…" } else { "Check for New Builds" }, !app.checking).clicked() {
+            app.check_updates(&ctx, true);
+        }
         if task_row(ui, &pal, I::PLUS, None, "Add Build…", true).clicked() {
             app.add_external_build(&ctx);
         }
@@ -204,6 +220,19 @@ fn tasks(app: &mut App, ui: &mut egui::Ui) {
                     if let Some(d) = &exe_dir {
                         platform::open_folder(d);
                     }
+                }
+                let report = app.compat.get(&name).cloned();
+                let (icon, col, label) = match crate::ui_center::compat_marker(app, &name) {
+                    Some((icon, col, _)) => (icon, Some(col), "Profile Compatibility Warnings…".to_string()),
+                    None => (I::CIRCLE_CHECK, Some(pal.green), format!("Works with '{}'", app.active_profile)),
+                };
+                if task_row(ui, &pal, icon, col, &label, report.is_some()).clicked() {
+                    if let Some(report) = report {
+                        app.dlg.compat = Some(CompatDialog { build: name.clone(), report });
+                    }
+                }
+                if task_row(ui, &pal, I::TRASH_2, None, "Remove Build…", running == 0).clicked() {
+                    app.dlg.remove = Some(name.clone());
                 }
             });
         }
@@ -235,6 +264,36 @@ fn tasks(app: &mut App, ui: &mut egui::Ui) {
                 if task_row(ui, &pal, I::DOWNLOAD, Some(if can { pal.green } else { pal.faint }), "Install into Profile…", can).clicked() {
                     let build = app.builds.first().map(|b| b.name.clone()).unwrap_or_default();
                     app.dlg.install = Some((id.clone(), build, app.active_profile.clone()));
+                }
+            });
+        }
+        Selection::Available(_) => {
+            let a = app.selected_available().cloned();
+            section(ui, &pal, "sec_avail", "Selected Download", true, |ui| {
+                if let Some(a) = a {
+                    let installed = app.installed_as(&a).map(|b| b.name.clone());
+                    let busy = app.download_progress(&a.name).is_some();
+                    match installed {
+                        Some(b) => {
+                            if task_row(ui, &pal, I::PLAY, Some(pal.green), "Launch (installed)", true).clicked() {
+                                app.launch_build(&ctx, &b);
+                            }
+                        }
+                        None => {
+                            if task_row(ui, &pal, I::DOWNLOAD, Some(pal.green), if busy { "Downloading…" } else { "Download and Install" }, !busy).clicked() {
+                                app.start_download(&ctx, a.clone());
+                            }
+                        }
+                    }
+                    if busy && task_row(ui, &pal, I::X, None, "Cancel Download", true).clicked() {
+                        app.cancel_download(&a.name);
+                    }
+                    if task_row(ui, &pal, I::COPY, None, "Copy Download Link", true).clicked() {
+                        ctx.copy_text(a.url.clone());
+                        app.toast(&ctx, "Download link copied");
+                    }
+                } else {
+                    ui.label(egui::RichText::new("No longer listed").size(12.0).color(pal.muted));
                 }
             });
         }
@@ -277,6 +336,14 @@ fn tasks(app: &mut App, ui: &mut egui::Ui) {
         if task_row(ui, &pal, icon, None, label, true).clicked() {
             app.set_theme(&ctx, next);
         }
+        let tray = if app.prefs.close_to_tray { "Closing Keeps Spindle in the Tray" } else { "Closing Exits Spindle" };
+        if task_row(ui, &pal, if app.prefs.close_to_tray { I::CIRCLE_CHECK } else { I::CIRCLE }, None, tray, true)
+            .on_hover_text("When on, the close button hides Spindle to the notification area, where it keeps watching for new builds")
+            .clicked()
+        {
+            app.prefs.close_to_tray = !app.prefs.close_to_tray;
+            app.prefs_dirty = true;
+        }
     });
 
     section(ui, &pal, "sec_details", "Details", true, |ui| {
@@ -316,9 +383,27 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
             if let Some(b) = app.selected_build() {
                 title(ui, &format!("Blender {}", b.version.as_deref().unwrap_or("?")));
                 kv(ui, &pal, "Name", &b.name);
-                kv(ui, &pal, "Channel", Channel::of(&b.name).label());
+                kv(ui, &pal, "Channel", b.channel.label());
                 kv(ui, &pal, "Location", if b.external { "External" } else { "Library" });
                 kv(ui, &pal, "Running", &app.running_of(b).len().to_string());
+                if let Some(py) = spindle_core::compat::build_python(b) {
+                    kv(ui, &pal, "Python", &format!("{}.{}", py.0, py.1));
+                }
+                if let Some(m) = &b.meta {
+                    if !m.branch.is_empty() {
+                        kv(ui, &pal, "Branch", &m.branch);
+                    }
+                    if !m.hash.is_empty() {
+                        kv(ui, &pal, "Commit", &m.hash);
+                    }
+                    if m.published.is_some() {
+                        kv(ui, &pal, "Built", &crate::ui_center::ago(m.published));
+                    }
+                }
+                if let Some(r) = app.compat.get(&b.name) {
+                    let n = r.issues.iter().filter(|i| i.severity >= spindle_core::compat::Severity::Warning).count();
+                    kv(ui, &pal, "Profile check", &if n == 0 { "Compatible".to_string() } else { format!("{n} issue(s)") });
+                }
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(b.executable.display().to_string()).size(11.0).color(pal.muted));
             }
@@ -355,6 +440,25 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
                 kv(ui, &pal, "Archive", &a.archive);
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new(format!("sha256 {}", a.sha256)).size(10.5).color(pal.faint));
+            }
+        }
+        Selection::Available(_) => {
+            if let Some(a) = app.selected_available() {
+                title(ui, &format!("Blender {}", a.version));
+                kv(ui, &pal, "Channel", a.channel.label());
+                kv(ui, &pal, "Cycle", &a.cycle);
+                kv(ui, &pal, if matches!(a.channel, Channel::Stable | Channel::Lts) { "Series" } else { "Branch" }, &a.branch);
+                if !a.hash.is_empty() {
+                    kv(ui, &pal, "Commit", &a.hash);
+                }
+                if let Some(s) = a.size {
+                    kv(ui, &pal, "Size", &format!("{} MB", s / 1_000_000));
+                }
+                kv(ui, &pal, "Published", &crate::ui_center::ago(a.published));
+                kv(ui, &pal, "Checksum", if a.sha256_url.is_some() { "SHA-256 verified" } else { "None published" });
+                kv(ui, &pal, "Installs as", &a.name);
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(&a.url).size(11.0).color(pal.muted));
             }
         }
         Selection::Profile(p) => {

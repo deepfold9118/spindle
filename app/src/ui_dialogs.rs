@@ -10,6 +10,110 @@ pub fn dialogs(app: &mut App, ctx: &egui::Context) {
     install(app, ctx);
     new_profile(app, ctx);
     about(app, ctx);
+    compat(app, ctx);
+    remove(app, ctx);
+}
+
+/// Profile compatibility report for a build, with Launch Anyway.
+fn compat(app: &mut App, ctx: &egui::Context) {
+    let Some(d) = app.dlg.compat.clone() else { return };
+    let pal = app.pal;
+    let mut launch = false;
+    let mut close = false;
+    let blocker = d.report.worst() == Some(spindle_core::compat::Severity::Blocker);
+    egui::Modal::new(egui::Id::new("m_compat")).show(ctx, |ui| {
+        ui.set_width(520.0);
+        let series = d.report.build_series.clone().unwrap_or_else(|| "?".into());
+        ui.label(egui::RichText::new(format!("Profile '{}' with Blender {series}", d.report.profile)).font(bold(15.0)));
+        ui.add_space(2.0);
+        ui.label(egui::RichText::new(&d.build).size(11.5).color(pal.faint));
+        ui.add_space(8.0);
+        if d.report.issues.is_empty() {
+            ui.label(egui::RichText::new(format!("{}  No problems found", I::CIRCLE_CHECK)).color(pal.green));
+        }
+        egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+            for i in &d.report.issues {
+                let (icon, col) = match i.severity {
+                    spindle_core::compat::Severity::Blocker => (I::CIRCLE_ALERT, pal.red),
+                    spindle_core::compat::Severity::Warning => (I::TRIANGLE_ALERT, pal.orange),
+                    spindle_core::compat::Severity::Info => (I::INFO, pal.muted),
+                };
+                egui::Frame::new().fill(pal.deep).corner_radius(6).inner_margin(egui::Margin::same(10)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(icon).font(crate::theme::icon_font(14.0)).color(col));
+                        ui.label(egui::RichText::new(&i.title).font(bold(13.0)).color(pal.text));
+                    });
+                    ui.label(egui::RichText::new(&i.detail).size(12.0).color(pal.muted));
+                });
+                ui.add_space(6.0);
+            }
+        });
+        if blocker {
+            ui.label(egui::RichText::new("Tip: launch older builds with a separate profile (Launch with, in the toolbar) to keep your main profile safe.").size(11.5).color(pal.faint));
+            ui.add_space(6.0);
+        }
+        ui.horizontal(|ui| {
+            if icon_text_button(ui, &pal, I::X, "Cancel", blocker).clicked() {
+                close = true;
+            }
+            let label = if blocker { "Launch Anyway" } else { "Launch" };
+            if icon_text_button(ui, &pal, I::PLAY, label, !blocker).clicked() {
+                launch = true;
+            }
+        });
+    });
+    if launch {
+        app.dlg.compat = None;
+        app.launch_build_now(ctx, &d.build);
+    } else if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.dlg.compat = None;
+    }
+}
+
+/// Confirm removing a build.
+fn remove(app: &mut App, ctx: &egui::Context) {
+    let Some(name) = app.dlg.remove.clone() else { return };
+    let pal = app.pal;
+    let Some(b) = app.builds.iter().find(|b| b.name == name).cloned() else {
+        app.dlg.remove = None;
+        return;
+    };
+    let running = app.running_of(&b).len();
+    let mut go = false;
+    let mut close = false;
+    egui::Modal::new(egui::Id::new("m_remove")).show(ctx, |ui| {
+        ui.set_width(400.0);
+        ui.label(egui::RichText::new(format!("Remove Blender {}?", b.version.as_deref().unwrap_or(&b.name))).font(bold(15.0)));
+        ui.add_space(4.0);
+        let body = if b.external {
+            format!("Spindle forgets this build. Its files stay where they are:\n{}", b.root().display())
+        } else {
+            format!("The build folder moves to the Recycle Bin, so you can restore it from there:\n{}", b.root().display())
+        };
+        ui.label(egui::RichText::new(body).size(12.0).color(pal.muted));
+        ui.label(egui::RichText::new("Profiles, add-ons and preferences are not touched.").size(12.0).color(pal.muted));
+        if running > 0 {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new(format!("{running} Blender(s) from this build are running; close them first.")).size(12.0).color(pal.red));
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            let label = if b.external { "Remove from Spindle" } else { "Move to Recycle Bin" };
+            if ui.add_enabled(running == 0, egui::Button::new(format!("{}  {label}", I::TRASH_2))).clicked() {
+                go = true;
+            }
+            if ui.button("Cancel").clicked() {
+                close = true;
+            }
+        });
+    });
+    if go {
+        app.dlg.remove = None;
+        app.remove_build(ctx, &name);
+    } else if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.dlg.remove = None;
+    }
 }
 
 fn superhive_login(app: &mut App, ctx: &egui::Context) {

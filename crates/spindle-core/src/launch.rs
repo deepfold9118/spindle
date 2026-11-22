@@ -8,7 +8,7 @@ use std::process::{Command, Output, Stdio};
 fn command(sp: &Spindle, build: &Build, profile: &Profile, args: &[String]) -> Result<Command> {
     fs::create_dir_all(sp.instances_dir())?;
     let mut cmd = Command::new(&build.executable);
-    cmd.args(args).envs(profile.env(sp));
+    cmd.args(args).envs(profile.env(sp, build));
     if let Some(dir) = build.executable.parent() {
         cmd.current_dir(dir);
     }

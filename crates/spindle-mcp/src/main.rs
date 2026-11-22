@@ -7,7 +7,7 @@
 use anyhow::Result;
 use serde_json::{Value, json};
 use spindle_core::profile::Profile;
-use spindle_core::{Spindle, builds, instances, launch};
+use spindle_core::{Spindle, builds, compat, instances, launch};
 use std::io::{BufRead, Write};
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
@@ -89,7 +89,8 @@ fn tools() -> Value {
                 "properties": {
                     "build": { "type": "string", "description": "Build name or version, e.g. \"5.3\"" },
                     "profile": { "type": "string", "description": "Profile name (default profile if omitted)" },
-                    "file": { "type": "string", "description": "Optional .blend file to open" }
+                    "file": { "type": "string", "description": "Optional .blend file to open" },
+                    "force": { "type": "boolean", "description": "Launch even when this build can't read the profile (older builds); off by default" }
                 },
                 "required": ["build"]
             }
@@ -107,8 +108,22 @@ fn call(name: &str, args: &Value) -> Result<Value> {
             let build = builds::find(&sp, query)?;
             let profile = Profile::open(&sp, &sp.profile_name(args.get("profile").and_then(Value::as_str)))?;
             let extra: Vec<String> = args.get("file").and_then(Value::as_str).map(|f| vec![f.to_owned()]).unwrap_or_default();
+            let report = compat::check(&build, &profile.name, &profile.root);
+            let force = args.get("force").and_then(Value::as_bool).unwrap_or(false);
+            if report.worst() == Some(compat::Severity::Blocker) && !force {
+                anyhow::bail!(
+                    "not launched: {} can't use profile '{}' safely: {}. Pass force=true to launch anyway, \
+                     or use a profile made for older builds. Report: {}",
+                    build.name,
+                    profile.name,
+                    report.issues[0].title,
+                    serde_json::to_string(&report.issues)?
+                );
+            }
             let pid = launch::launch(&sp, &build, &profile, &extra)?;
-            Ok(json!({ "pid": pid, "build": build.name, "profile": profile.name }))
+            let warnings: Vec<&compat::Issue> =
+                report.issues.iter().filter(|i| i.severity >= compat::Severity::Warning).collect();
+            Ok(json!({ "pid": pid, "build": build.name, "profile": profile.name, "compatibility_warnings": warnings }))
         }
         _ => anyhow::bail!("unknown tool: {name}"),
     }

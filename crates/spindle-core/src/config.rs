@@ -18,6 +18,28 @@ pub struct Config {
     /// Builds that live outside the library: name -> Blender executable.
     pub builds: BTreeMap<String, PathBuf>,
     pub superhive: SuperhiveConfig,
+    pub downloads: DownloadsConfig,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DownloadsConfig {
+    /// Release series Blender supports long-term (download.blender.org has no marker for it).
+    pub lts_series: Vec<String>,
+    /// How many of the newest release series to list (LTS series are always listed).
+    pub release_series: usize,
+    /// How many of the newest experimental/patch builds to list.
+    pub experimental_builds: usize,
+}
+
+impl Default for DownloadsConfig {
+    fn default() -> Self {
+        Self {
+            lts_series: ["2.83", "2.93", "3.3", "3.6", "4.2", "4.5", "5.2"].map(String::from).to_vec(),
+            release_series: 12,
+            experimental_builds: 40,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -74,12 +96,20 @@ impl Spindle {
     pub fn addons_dir(&self) -> PathBuf {
         self.library.join("addons")
     }
+    /// Partial downloads of Blender builds.
+    pub fn downloads_dir(&self) -> PathBuf {
+        self.library.join("downloads")
+    }
+    /// Spindle's own runtime files (instance heartbeats, the available-builds cache).
+    pub fn run_dir(&self) -> PathBuf {
+        self.library.join("run")
+    }
     pub fn profiles_dir(&self) -> PathBuf {
         self.library.join("profiles")
     }
     /// Heartbeat files written by the bridge script inside each running Blender.
     pub fn instances_dir(&self) -> PathBuf {
-        self.library.join("run").join("instances")
+        self.run_dir().join("instances")
     }
 
     pub fn profile_name(&self, explicit: Option<&str>) -> String {

@@ -2,7 +2,9 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use spindle_core::addons::AddonLibrary;
 use spindle_core::profile::Profile;
-use spindle_core::{Spindle, builds, instances, launch, superhive};
+use spindle_core::builds::Channel;
+use spindle_core::downloads::{self, Available, Progress};
+use spindle_core::{Spindle, builds, compat, instances, launch, superhive};
 use std::io::Read;
 use std::path::PathBuf;
 
@@ -30,9 +32,20 @@ enum Cmd {
         build: String,
         #[arg(long, short)]
         profile: Option<String>,
+        /// Launch even when the profile can't be read by this build.
+        #[arg(long)]
+        force: bool,
         /// Extra Blender arguments (after `--`).
         #[arg(last = true)]
         args: Vec<String>,
+    },
+    /// Check whether a profile works with a build (older builds can't read everything).
+    Check {
+        build: String,
+        #[arg(long, short)]
+        profile: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// List Blenders launched by Spindle that are running right now.
     Instances {
@@ -54,6 +67,27 @@ enum BuildsCmd {
     },
     /// Register a Blender executable that lives outside the library.
     Add { name: String, executable: PathBuf },
+    /// List Blender builds available to download.
+    Available {
+        /// lts, stable, daily or experimental.
+        #[arg(long, short)]
+        channel: Option<String>,
+        /// Fetch fresh listings instead of the cache (which refreshes after an hour anyway).
+        #[arg(long)]
+        refresh: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Download and install a build: an exact name from `available`, or a version like "4.5".
+    Download {
+        query: String,
+        #[arg(long, short)]
+        channel: Option<String>,
+    },
+    /// Show newer builds of what's installed.
+    Updates,
+    /// Remove a build: library builds go to the Recycle Bin, external ones are unregistered.
+    Remove { build: String },
 }
 
 #[derive(Subcommand)]
@@ -111,7 +145,7 @@ fn main() -> Result<()> {
         }
         Cmd::Builds(BuildsCmd::List { json: false }) => {
             for b in builds::list(&sp)? {
-                println!("{:<10} {}{}", b.version.as_deref().unwrap_or("?"), b.name,
+                println!("{:<10} {:<13} {}{}", b.version.as_deref().unwrap_or("?"), b.channel.label(), b.name,
                     if b.external { format!("  ({})", b.executable.display()) } else { String::new() });
             }
         }
@@ -119,14 +153,73 @@ fn main() -> Result<()> {
             builds::register_external(&mut sp, &name, &executable)?;
             println!("registered {name}");
         }
+        Cmd::Builds(BuildsCmd::Available { channel, refresh, json }) => {
+            let channel = channel.as_deref().map(parse_channel).transpose()?;
+            let cat = catalog(&sp, refresh)?;
+            let list: Vec<&Available> = cat.builds.iter().filter(|a| channel.is_none_or(|c| a.channel == c)).collect();
+            if json {
+                println!("{}", serde_json_pretty(&list)?);
+            } else {
+                let installed: Vec<String> = builds::list(&sp)?.into_iter().map(|b| b.name).collect();
+                for a in &list {
+                    println!("{:<13} {:<9} {:<10} {:>7}  {}{}", a.channel.label(), a.version, a.cycle,
+                        a.size.map(|s| format!("{} MB", s / 1_000_000)).unwrap_or_default(), a.name,
+                        if installed.contains(&a.name) { "  (installed)" } else { "" });
+                }
+            }
+            for e in &cat.errors {
+                eprintln!("warning: {e}");
+            }
+        }
+        Cmd::Builds(BuildsCmd::Download { query, channel }) => {
+            let channel = channel.as_deref().map(parse_channel).transpose()?;
+            let a = pick(&catalog(&sp, false)?, &query, channel)?;
+            eprintln!("downloading {} ({})", a.name, a.url);
+            let build = install_with_progress(&sp, &a)?;
+            println!("installed {} at {}", build.name, build.root().display());
+        }
+        Cmd::Builds(BuildsCmd::Updates) => {
+            let ups = downloads::updates(&builds::list(&sp)?, &catalog(&sp, false)?);
+            if ups.is_empty() {
+                println!("everything is up to date");
+            }
+            for u in ups {
+                let from = u.installed.unwrap_or_else(|| format!("new {} release", u.available.channel.label()));
+                println!("{from:<40} -> {}", u.available.name);
+            }
+        }
+        Cmd::Builds(BuildsCmd::Remove { build }) => {
+            let b = builds::find(&sp, &build)?;
+            match builds::remove(&mut sp, &b)? {
+                builds::Removed::Trashed => println!("moved {} to the Recycle Bin", b.name),
+                builds::Removed::Unregistered => println!("unregistered {} (its files were left alone)", b.name),
+            }
+        }
+        Cmd::Check { build, profile, json } => {
+            let b = builds::find(&sp, &build)?;
+            let p = Profile::open(&sp, &sp.profile_name(profile.as_deref()))?;
+            let report = compat::check(&b, &p.name, &p.root);
+            if json {
+                println!("{}", serde_json_pretty(&report)?);
+            } else {
+                print_report(&report);
+            }
+        }
         Cmd::Profiles => {
             for p in Profile::list(&sp)? {
                 println!("{p}");
             }
         }
-        Cmd::Launch { build, profile, args } => {
+        Cmd::Launch { build, profile, force, args } => {
             let build = builds::find(&sp, &build)?;
             let profile = Profile::open(&sp, &sp.profile_name(profile.as_deref()))?;
+            let report = compat::check(&build, &profile.name, &profile.root);
+            if report.needs_attention() {
+                print_report(&report);
+                if report.worst() == Some(compat::Severity::Blocker) && !force {
+                    bail!("not launching: this build can't use the profile safely (pass --force to launch anyway)");
+                }
+            }
             let pid = launch::launch(&sp, &build, &profile, &args)?;
             println!("launched {} with profile '{}' (pid {pid})", build.name, profile.name);
         }
@@ -201,6 +294,85 @@ fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn parse_channel(s: &str) -> Result<Channel> {
+    Ok(match s.to_lowercase().as_str() {
+        "lts" => Channel::Lts,
+        "stable" | "release" => Channel::Stable,
+        "daily" => Channel::Daily,
+        "experimental" | "patch" | "branch" => Channel::Experimental,
+        other => bail!("unknown channel '{other}' (lts, stable, daily or experimental)"),
+    })
+}
+
+/// The cached catalog when it's under an hour old, else a fresh fetch.
+fn catalog(sp: &Spindle, refresh: bool) -> Result<downloads::Catalog> {
+    match downloads::cached(sp) {
+        Some(c) if !refresh && c.age_secs() < 3600 => Ok(c),
+        _ => downloads::fetch(sp),
+    }
+}
+
+/// Exact name, else the newest build whose version matches (releases preferred).
+fn pick(cat: &downloads::Catalog, query: &str, channel: Option<Channel>) -> Result<Available> {
+    let pool: Vec<&Available> = cat.builds.iter().filter(|a| channel.is_none_or(|c| a.channel == c)).collect();
+    if let Some(a) = pool.iter().find(|a| a.name == query) {
+        return Ok((*a).clone());
+    }
+    let matching: Vec<&Available> = pool
+        .into_iter()
+        .filter(|a| a.version == query || a.version.starts_with(&format!("{query}.")))
+        .collect();
+    matching
+        .iter()
+        .find(|a| matches!(a.channel, Channel::Stable | Channel::Lts))
+        .or(matching.first())
+        .map(|a| (*a).clone())
+        .with_context(|| format!("nothing available matches '{query}' (see `spindle builds available`)"))
+}
+
+fn install_with_progress(sp: &Spindle, a: &Available) -> Result<builds::Build> {
+    let progress = Progress::default();
+    std::thread::scope(|s| {
+        let job = s.spawn(|| downloads::install(sp, a, &progress));
+        let mut last = String::new();
+        while !job.is_finished() {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            let line = match (progress.phase(), progress.fraction()) {
+                (downloads::Phase::Downloading, Some(f)) => format!("downloading {:>3.0}%", f * 100.0),
+                (downloads::Phase::Downloading, None) => "downloading".into(),
+                (downloads::Phase::Verifying, _) => "verifying SHA-256".into(),
+                (downloads::Phase::Extracting, f) => format!("unpacking {:>3.0}%", f.unwrap_or(0.0) * 100.0),
+            };
+            // Print every 10% step, not every tick.
+            let step = line.trim_end_matches('%').rsplit(' ').next().and_then(|n| n.trim().parse::<u32>().ok());
+            let key = match step {
+                Some(n) => format!("{} {}", line.split(' ').next().unwrap_or(""), n / 10),
+                None => line.clone(),
+            };
+            if key != last {
+                eprintln!("{line}");
+                last = key;
+            }
+        }
+        job.join().map_err(|_| anyhow::anyhow!("install thread panicked"))?
+    })
+}
+
+fn print_report(r: &compat::Report) {
+    println!("profile '{}' with {} (Blender {}):", r.profile, r.build, r.build_series.as_deref().unwrap_or("?"));
+    if r.issues.is_empty() {
+        println!("  compatible");
+    }
+    for i in &r.issues {
+        let tag = match i.severity {
+            compat::Severity::Blocker => "BLOCKER",
+            compat::Severity::Warning => "WARNING",
+            compat::Severity::Info => "info",
+        };
+        println!("  [{tag}] {}\n      {}", i.title, i.detail);
+    }
 }
 
 fn serde_json_pretty<T: serde::Serialize>(v: &T) -> Result<String> {

@@ -5,6 +5,8 @@ mod icons;
 mod logo;
 mod platform;
 mod theme;
+#[cfg(windows)]
+mod tray;
 mod ui_center;
 mod ui_dialogs;
 mod ui_panels;
@@ -25,6 +27,10 @@ fn main() -> eframe::Result {
     // Per-run overrides (not saved), so checks can picture every view and theme.
     let mut view: Option<app::View> = None;
     let mut theme: Option<theme::ThemeMode> = None;
+    // Start hidden in the notification area (for starting with Windows).
+    let start_in_tray = args.iter().any(|a| a == "--tray");
+    // Open the profile-compatibility dialog for a build (for screenshots).
+    let mut show_compat: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
         let next = args.get(i + 1).map(|s| s.to_lowercase());
@@ -36,9 +42,11 @@ fn main() -> eframe::Result {
                     "running" => Some(app::View::Running),
                     "addons" => Some(app::View::Addons),
                     "profiles" => Some(app::View::Profiles),
+                    "downloads" => Some(app::View::Downloads),
                     _ => None,
                 }
             }
+            ("--show-compat", Some(_)) => show_compat = Some(args[i + 1].clone()),
             ("--theme", Some(t)) => theme = if t == "light" { Some(theme::ThemeMode::Light) } else { Some(theme::ThemeMode::Dark) },
             _ => {
                 i += 1;
@@ -48,6 +56,18 @@ fn main() -> eframe::Result {
         i += 2;
     }
 
+    // One Spindle at a time: a second start brings the running one forward.
+    // `--quit` asks a running Spindle to exit (for installers and updaters).
+    #[cfg(windows)]
+    if args.iter().any(|a| a == "--quit") {
+        tray::signal_existing(tray::WM_QUIT_APP);
+        return Ok(());
+    }
+    #[cfg(windows)]
+    if screenshot.is_none() && tray::signal_existing(tray::WM_SHOW_MAIN) {
+        return Ok(());
+    }
+
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("Spindle")
         .with_app_id("spindle")
@@ -55,6 +75,9 @@ fn main() -> eframe::Result {
         .with_min_inner_size([960.0, 600.0])
         .with_decorations(false)
         .with_icon(app_icon());
+    if start_in_tray && screenshot.is_none() {
+        viewport = viewport.with_visible(false);
+    }
     if screenshot.is_some() {
         viewport = viewport.with_active(false);
         #[cfg(windows)]
@@ -86,6 +109,14 @@ fn main() -> eframe::Result {
                 a.set_theme(&cc.egui_ctx, t);
                 a.prefs_dirty = false;
             }
+            if let Some(q) = &show_compat {
+                if let Ok(b) = spindle_core::builds::find(&a.sp, q) {
+                    if let Some(report) = a.compat.get(&b.name).cloned() {
+                        a.selection = app::Selection::Build(b.name.clone());
+                        a.dlg.compat = Some(app::CompatDialog { build: b.name, report });
+                    }
+                }
+            }
             Ok(Box::new(a))
         }),
     )
@@ -97,6 +128,15 @@ impl eframe::App for app::App {
         self.frame_no += 1;
 
         self.poll(&ctx);
+        // Closing (title bar, Alt+F4, taskbar) hides to the tray unless quitting.
+        if ctx.input(|i| i.viewport().close_requested())
+            && !self.quitting
+            && self.prefs.close_to_tray
+            && self.screenshot.is_none()
+            && self.hide_to_tray()
+        {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         ui_shell::shortcuts(self, &ctx);
         ui_shell::title_bar(self, ui);
         ui_shell::context_bar(self, ui);

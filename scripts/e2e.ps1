@@ -9,8 +9,15 @@
        of every view (checks/ui) -> close -> cleared
     3. Superhive list + sync into the add-on library (skipped if no token is stored)
     4. install a library add-on into a profile with one build, confirm another build sees it enabled
+    5. build downloads: every channel lists builds, update check runs
+    6. profile compatibility: builds older than 4.5 are flagged as unable to read 5.x preferences,
+       newer ones aren't; spindle-mcp refuses to launch an old build onto such a profile
+    7. removal: an external build is unregistered and its files are left alone
+    8. tray: close hides to the tray, the tray shows it again, a second start hands over,
+       `--quit` exits (skipped while a Spindle is already running)
   Everything runs in a throwaway profile ("e2e-<random>") that is deleted at the end;
-  the default profile is never touched.
+  the default profile is never touched. Downloading a whole build is not repeated here
+  (400 MB each); run `spindle builds download <version>` to exercise it.
 
 .EXAMPLE
   pwsh scripts/e2e.ps1
@@ -51,19 +58,40 @@ function Test-PictureDrawn($path) {
     } finally { $bmp.Dispose() }
 }
 
-function Invoke-BlenderPython($exe, $testProfileDir, $code) {
+# (major, minor) as a comparable number: 4.5 -> 405.
+function Get-Series($version) {
+    if ($version -match '^(\d+)\.(\d+)') { return [int]$Matches[1] * 100 + [int]$Matches[2] }
+    return 0
+}
+
+function Invoke-BlenderPython($build, $testProfileDir, $code) {
     $file = New-TemporaryFile
     $py = "$($file.FullName).py"
     Move-Item $file.FullName $py
     Set-Content $py $code
-    $old = $env:BLENDER_USER_RESOURCES
+    $names = "BLENDER_USER_RESOURCES", "BLENDER_USER_CONFIG", "BLENDER_USER_SCRIPTS", "BLENDER_USER_DATAFILES"
+    $old = @{}; foreach ($n in $names) { $old[$n] = [Environment]::GetEnvironmentVariable($n) }
     try {
         $env:BLENDER_USER_RESOURCES = $testProfileDir
-        & $exe -b --python $py 2>$null | Where-Object { $_ -like "E2E *" }
+        if ((Get-Series $build.version) -lt 306) {
+            # Spindle sets these for builds older than 3.6, which ignore BLENDER_USER_RESOURCES.
+            $env:BLENDER_USER_CONFIG = Join-Path $testProfileDir "config"
+            $env:BLENDER_USER_SCRIPTS = Join-Path $testProfileDir "scripts"
+            $env:BLENDER_USER_DATAFILES = Join-Path $testProfileDir "datafiles"
+        }
+        & $build.executable -b --python $py 2>$null | Where-Object { $_ -like "E2E *" }
     } finally {
-        $env:BLENDER_USER_RESOURCES = $old
+        foreach ($n in $names) { [Environment]::SetEnvironmentVariable($n, $old[$n]) }
         Remove-Item $py -ErrorAction SilentlyContinue
     }
+}
+
+function Invoke-Mcp($calls) {
+    $requests = @(
+        '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}',
+        '{"jsonrpc":"2.0","method":"notifications/initialized"}'
+    ) + $calls
+    $requests | & $mcp | ForEach-Object { $_ | ConvertFrom-Json }
 }
 
 Push-Location $root
@@ -86,7 +114,7 @@ try {
 
     # --- 1. profile redirect on every build ----------------------------------
     foreach ($b in $builds) {
-        $out = Invoke-BlenderPython $b.executable $testProfileDir "import bpy`nprint('E2E', bpy.utils.user_resource('CONFIG'))"
+        $out = Invoke-BlenderPython $b $testProfileDir "import bpy`nprint('E2E', bpy.utils.user_resource('CONFIG'))"
         $got = ($out -replace '^E2E\s+', '').Trim()
         Add-Result "profile redirect ($($b.name))" ($got -eq (Join-Path $testProfileDir "config")) $got
     }
@@ -105,24 +133,24 @@ try {
         } while (-not $inst -and (Get-Date) -lt $deadline)
         Add-Result "launch + heartbeat" ([bool]$inst) "pid $launchedPid, profile $($inst.profile)"
 
-        $requests = @(
-            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"e2e","version":"0"}}}',
-            '{"jsonrpc":"2.0","method":"notifications/initialized"}',
-            '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_running_blenders","arguments":{}}}'
-        )
-        $responses = $requests | & $mcp | ForEach-Object { $_ | ConvertFrom-Json }
+        $responses = Invoke-Mcp @('{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_running_blenders","arguments":{}}}')
         $seen = $responses | Where-Object id -eq 2 | ForEach-Object { $_.result.structuredContent.instances } | Where-Object pid -eq $launchedPid
         Add-Result "spindle-mcp sees instance" ([bool]$seen)
 
         # UI pictures (the Fontabulous check): every view while a Blender is running, plus the light theme.
         $shots = Join-Path $root "checks\ui"
         $null = New-Item -ItemType Directory -Force $shots
-        foreach ($shot in @(@("builds", "dark"), @("running", "dark"), @("addons", "dark"), @("profiles", "dark"), @("builds", "light"))) {
+        foreach ($shot in @(@("builds", "dark"), @("running", "dark"), @("addons", "dark"), @("profiles", "dark"), @("downloads", "dark"), @("builds", "light"))) {
             $png = Join-Path $shots "$($shot[0])-$($shot[1]).png"
             Remove-Item $png -ErrorAction SilentlyContinue
             & $appExe --screenshot $png --view $shot[0] --theme $shot[1] | Out-Null
             Add-Result "ui screenshot $($shot[0]) ($($shot[1]))" (Test-PictureDrawn $png) $png
         }
+        # The compatibility dialog for the oldest build.
+        $png = Join-Path $shots "compat-dark.png"
+        Remove-Item $png -ErrorAction SilentlyContinue
+        & $appExe --screenshot $png --view builds --show-compat $builds[-1].name | Out-Null
+        Add-Result "ui screenshot compatibility dialog" (Test-PictureDrawn $png) $png
 
         taskkill /PID $launchedPid 2>&1 | Out-Null
         $deadline = (Get-Date).AddSeconds(30)
@@ -151,11 +179,80 @@ try {
         $installer = $builds[0]
         & $spindle addons install $Addon --build $installer.name --profile $testProfile | Out-Null
         Add-Result "addon install ($Addon via $($installer.name))" ($LASTEXITCODE -eq 0)
-        $checker = $builds[-1]
-        $out = Invoke-BlenderPython $checker.executable $testProfileDir "import bpy`nprint('E2E', [a.module for a in bpy.context.preferences.addons if a.module.endswith('.$Addon')])"
+        # The oldest other build that can read the installer's preferences (5.x format: 4.5+).
+        $checker = @($builds | Where-Object { $_.name -ne $installer.name -and (Get-Series $_.version) -ge 405 })[-1]
+        if (-not $checker) { $checker = $installer }
+        $out = Invoke-BlenderPython $checker $testProfileDir "import bpy`nprint('E2E', [a.module for a in bpy.context.preferences.addons if a.module.endswith('.$Addon')])"
         Add-Result "addon enabled in $($checker.name)" ($out -match $Addon) ($out -replace '^E2E\s+', '')
     } else {
         Add-Result "addon install" $null "'$Addon' not in the add-on library"
+    }
+
+    # --- 5. build downloads ------------------------------------------------------
+    $avail = & $spindle builds available --refresh --json | ConvertFrom-Json
+    foreach ($ch in "lts", "stable", "daily", "experimental") {
+        $n = @($avail | Where-Object channel -eq $ch).Count
+        Add-Result "available $ch builds" ($n -gt 0) "$n listed"
+    }
+    $ups = & $spindle builds updates
+    Add-Result "update check" ($LASTEXITCODE -eq 0) (($ups | Select-Object -First 3) -join "; ")
+
+    # --- 6. profile compatibility ---------------------------------------------------
+    $prefs = Join-Path $testProfileDir "config\userpref.blend"
+    if (-not (Test-Path $prefs)) {
+        # Header of a preferences file saved by Blender 5.3 (the 5.0+ .blend format).
+        [IO.File]::WriteAllBytes($prefs, [Text.Encoding]::ASCII.GetBytes("BLENDER17-01v0503" + ("`0" * 64)))
+    }
+    foreach ($b in $builds) {
+        $r = & $spindle check $b.name --profile $testProfile --json | ConvertFrom-Json
+        $blocked = @($r.issues | Where-Object severity -eq "blocker").Count -gt 0
+        $expect = (Get-Series $b.version) -lt 405
+        Add-Result "compat check ($($b.name))" ($blocked -eq $expect) $(if ($blocked) { "blocker: $($r.issues[0].title)" } else { "$(@($r.issues).Count) issue(s), no blocker" })
+    }
+    $old = @($builds | Where-Object { (Get-Series $_.version) -lt 405 })[-1]
+    if ($old) {
+        $arg = @{ name = "launch_blender"; arguments = @{ build = $old.name; profile = $testProfile } } | ConvertTo-Json -Compress
+        $resp = Invoke-Mcp @("{""jsonrpc"":""2.0"",""id"":3,""method"":""tools/call"",""params"":$arg}") | Where-Object id -eq 3
+        $text = ($resp.result.content | ForEach-Object text) -join " "
+        Add-Result "spindle-mcp refuses old build" ($resp.result.isError -and $text -match "not launched") $old.name
+    } else {
+        Add-Result "spindle-mcp refuses old build" $null "no build older than 4.5 installed"
+    }
+
+    # --- 7. removal (external build: unregistered, files kept) ---------------------
+    $alias = "e2e-external-" + $testProfile.Substring(4)
+    & $spindle builds add $alias $builds[0].executable | Out-Null
+    $out = & $spindle builds remove $alias
+    $gone = -not (& $spindle builds list --json | ConvertFrom-Json | Where-Object name -eq $alias)
+    Add-Result "remove external build" ($gone -and (Test-Path $builds[0].executable) -and "$out" -match "unregistered") "$out"
+
+    # --- 8. tray ----------------------------------------------------------------
+    if (Get-Process spindle_app -ErrorAction SilentlyContinue) {
+        Add-Result "tray" $null "Spindle is running; close it to test the tray"
+    } else {
+        Add-Type -Namespace E2E -Name U -MemberDefinition @'
+[DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindowW(string cls, string title);
+[DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+[DllImport("user32.dll")] public static extern bool PostMessageW(IntPtr h, uint m, IntPtr w, IntPtr l);
+'@
+        function Find-Tray { [E2E.U]::FindWindowW("SpindleTrayWindow", [NullString]::Value) }
+        function Wait-Until([scriptblock]$cond, $secs = 10) {
+            $t = [Diagnostics.Stopwatch]::StartNew()
+            while ($t.Elapsed.TotalSeconds -lt $secs) { if (& $cond) { return $true }; Start-Sleep -Milliseconds 200 }
+            return $false
+        }
+        $app = Start-Process $appExe -PassThru
+        $null = Wait-Until { (Find-Tray) -ne [IntPtr]::Zero } 20
+        $null = Wait-Until { $app.Refresh(); $app.MainWindowHandle -ne [IntPtr]::Zero } 20
+        $main = $app.MainWindowHandle
+        $second = Start-Process $appExe -PassThru
+        Add-Result "tray: second start hands over" ($second.WaitForExit(8000) -and @(Get-Process spindle_app).Count -eq 1)
+        [void][E2E.U]::PostMessageW($main, 0x0010, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_CLOSE
+        Add-Result "tray: close hides to tray" ((Wait-Until { -not [E2E.U]::IsWindowVisible($main) } 5) -and -not $app.HasExited)
+        [void][E2E.U]::PostMessageW((Find-Tray), 0x8003, [IntPtr]::Zero, [IntPtr]::Zero)   # WM_SHOW_MAIN
+        Add-Result "tray: shows the window again" (Wait-Until { [E2E.U]::IsWindowVisible($main) } 5)
+        & $appExe --quit
+        Add-Result "tray: --quit exits and removes the icon" ($app.WaitForExit(15000) -and (Find-Tray) -eq [IntPtr]::Zero)
     }
 } finally {
     if ($testProfileDir -and (Test-Path $testProfileDir)) { Remove-Item $testProfileDir -Recurse -Force }

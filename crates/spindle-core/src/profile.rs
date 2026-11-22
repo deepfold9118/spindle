@@ -1,4 +1,5 @@
 use crate::Spindle;
+use crate::builds::Build;
 use anyhow::{Context, Result, bail};
 use std::ffi::OsString;
 use std::fs;
@@ -6,6 +7,9 @@ use std::path::PathBuf;
 
 /// The bridge script, installed into every profile's `scripts/startup` so it runs
 /// in every Blender that Spindle launches, regardless of which add-ons are enabled.
+/// Oldest series verified to honour `BLENDER_USER_RESOURCES` (3.6 does, 2.93 doesn't).
+pub const USER_RESOURCES_SINCE: (u32, u32) = (3, 6);
+
 const BRIDGE_SCRIPT: &str = include_str!("../../../bridge/spindle_bridge.py");
 
 /// A shared Blender user-resources folder (same layout as
@@ -60,12 +64,19 @@ impl Profile {
 
     /// Environment that points Blender at this profile and tells the bridge where to report.
     /// `BLENDER_USER_RESOURCES` redirects all user files (and beats a `portable/` folder),
-    /// so every build sees the same preferences, add-ons and extensions.
-    pub fn env(&self, sp: &Spindle) -> Vec<(&'static str, OsString)> {
-        vec![
+    /// so every build sees the same preferences, add-ons and extensions. Builds older than
+    /// 3.6 ignore it (2.93 was verified to), so they also get the per-folder variables.
+    pub fn env(&self, sp: &Spindle, build: &Build) -> Vec<(&'static str, OsString)> {
+        let mut env = vec![
             ("BLENDER_USER_RESOURCES", self.root.clone().into_os_string()),
             ("SPINDLE_PROFILE", self.name.clone().into()),
             ("SPINDLE_INSTANCES_DIR", sp.instances_dir().into_os_string()),
-        ]
+        ];
+        if build.series().is_none_or(|s| s < USER_RESOURCES_SINCE) {
+            env.push(("BLENDER_USER_CONFIG", self.root.join("config").into_os_string()));
+            env.push(("BLENDER_USER_SCRIPTS", self.root.join("scripts").into_os_string()));
+            env.push(("BLENDER_USER_DATAFILES", self.root.join("datafiles").into_os_string()));
+        }
+        env
     }
 }

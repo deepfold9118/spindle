@@ -1,17 +1,92 @@
 use crate::Spindle;
-use anyhow::{Result, bail};
-use serde::Serialize;
+use anyhow::{Context, Result, bail};
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+/// Release channel of a build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Channel {
+    Lts,
+    Stable,
+    Daily,
+    Experimental,
+    Custom,
+}
+
+impl Channel {
+    /// Best guess from a folder name, for builds Spindle didn't download itself.
+    pub fn from_name(name: &str) -> Self {
+        let n = name.to_lowercase();
+        if n.contains("lts") {
+            Channel::Lts
+        } else if n.contains("+pr") || n.contains("-pr") || n.contains("experimental") || n.contains("patch") {
+            Channel::Experimental
+        } else if n.contains("alpha") || n.contains("beta") || n.contains("daily") {
+            Channel::Daily
+        } else if n.contains("stable") || n.contains("candidate") {
+            Channel::Stable
+        } else {
+            Channel::Custom
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Channel::Lts => "LTS",
+            Channel::Stable => "Stable",
+            Channel::Daily => "Daily",
+            Channel::Experimental => "Experimental",
+            Channel::Custom => "Custom",
+        }
+    }
+}
+
+/// Written into a build folder by `downloads::install`, so Spindle knows where it came from.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BuildMeta {
+    pub channel: Option<Channel>,
+    pub version: String,
+    /// Builder risk/release cycle: alpha, beta, candidate, stable, lts.
+    pub cycle: String,
+    /// Source branch (`main`, `v52`, an experimental branch or PR) or the release series.
+    pub branch: String,
+    pub hash: String,
+    pub url: String,
+    /// Unix seconds of the upstream build.
+    pub published: Option<i64>,
+    /// Unix seconds when Spindle installed it.
+    pub installed: Option<i64>,
+}
+
+pub const META_FILE: &str = "spindle-build.json";
 
 #[derive(Debug, Clone, Serialize)]
 pub struct Build {
     pub name: String,
     pub executable: PathBuf,
-    /// Parsed from the folder name, e.g. "blender-5.3.0-stable.02f0899d78e3" -> "5.3.0".
+    /// From Spindle's metadata, else parsed from the folder name, e.g.
+    /// "blender-5.3.0-stable.02f0899d78e3" -> "5.3.0", else the build's `X.Y` data folder.
     pub version: Option<String>,
     /// True when registered from outside the library (config `builds` table).
     pub external: bool,
+    pub channel: Channel,
+    /// Present for builds Spindle downloaded.
+    pub meta: Option<BuildMeta>,
+}
+
+impl Build {
+    /// The folder holding the executable (the build root on Windows and Linux).
+    pub fn root(&self) -> &Path {
+        self.executable.parent().unwrap_or(Path::new("."))
+    }
+
+    /// (major, minor) of the build, from its version or its `X.Y` data folder.
+    pub fn series(&self) -> Option<(u32, u32)> {
+        self.version.as_deref().and_then(parse_series).or_else(|| data_folder_series(self.root()))
+    }
 }
 
 pub fn executable_name() -> &'static str {
@@ -33,25 +108,38 @@ pub fn list(sp: &Spindle) -> Result<Vec<Build>> {
         for entry in fs::read_dir(&dir)? {
             let path = entry?.path();
             let exe = path.join(executable_name());
-            if exe.is_file() {
-                let name = path.file_name().unwrap().to_string_lossy().into_owned();
-                builds.push(Build { version: version_from_name(&name), name, executable: exe, external: false });
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            if exe.is_file() && !name.starts_with('.') {
+                builds.push(from_folder(name, exe, false));
             }
         }
     }
     for (name, exe) in &sp.config.builds {
-        builds.push(Build {
-            name: name.clone(),
-            executable: exe.clone(),
-            version: version_from_name(name).or_else(|| exe.parent().and_then(|p| version_from_name(&p.to_string_lossy()))),
-            external: true,
-        });
+        let mut b = from_folder(name.clone(), exe.clone(), true);
+        if b.version.is_none() {
+            b.version = exe.parent().and_then(|p| version_from_name(&p.to_string_lossy()));
+        }
+        builds.push(b);
     }
     builds.sort_by(|a, b| {
         crate::version::compare(b.version.as_deref().unwrap_or(""), a.version.as_deref().unwrap_or(""))
             .then_with(|| a.name.cmp(&b.name))
     });
     Ok(builds)
+}
+
+fn from_folder(name: String, exe: PathBuf, external: bool) -> Build {
+    let root = exe.parent().map(Path::to_path_buf).unwrap_or_default();
+    let meta: Option<BuildMeta> =
+        fs::read(root.join(META_FILE)).ok().and_then(|b| serde_json::from_slice(&b).ok());
+    let version = meta
+        .as_ref()
+        .map(|m| m.version.clone())
+        .filter(|v| !v.is_empty())
+        .or_else(|| version_from_name(&name))
+        .or_else(|| data_folder_series(&root).map(|(a, b)| format!("{a}.{b}")));
+    let channel = meta.as_ref().and_then(|m| m.channel).unwrap_or_else(|| Channel::from_name(&name));
+    Build { name, executable: exe, version, external, channel, meta }
 }
 
 /// Find a build by exact name, or by a query that matches exactly one build
@@ -86,21 +174,81 @@ pub fn register_external(sp: &mut Spindle, name: &str, executable: &Path) -> Res
     sp.save()
 }
 
-fn version_from_name(name: &str) -> Option<String> {
+/// What `remove` did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Removed {
+    /// The build folder went to the Recycle Bin / Trash.
+    Trashed,
+    /// An external build was forgotten; its files were left alone.
+    Unregistered,
+}
+
+/// Remove a build. Library builds go to the Recycle Bin (recoverable); external builds are
+/// only unregistered. Refuses while a Blender from that build is running.
+pub fn remove(sp: &mut Spindle, build: &Build) -> Result<Removed> {
+    let exe = build.executable.to_string_lossy().to_lowercase();
+    if let Some(i) = crate::instances::list(sp)?.iter().find(|i| i.binary.to_lowercase() == exe) {
+        bail!("Blender {} from this build is running (pid {}); close it first", i.blender_version, i.pid);
+    }
+    if build.external {
+        sp.config.builds.remove(&build.name);
+        sp.save()?;
+        return Ok(Removed::Unregistered);
+    }
+    let root = build.root().to_path_buf();
+    let builds_dir = sp.builds_dir();
+    if root.parent() != Some(builds_dir.as_path()) {
+        bail!("{} is not inside the library's builds folder", root.display());
+    }
+    trash::delete(&root).with_context(|| format!("moving {} to the Recycle Bin", root.display()))?;
+    Ok(Removed::Trashed)
+}
+
+pub fn version_from_name(name: &str) -> Option<String> {
     let last = Path::new(name).file_name()?.to_string_lossy().into_owned();
     last.split(['-', ' '])
         .find(|part| part.chars().next().is_some_and(|c| c.is_ascii_digit()) && part.contains('.'))
-        .map(str::to_owned)
+        .map(|part| part.split('+').next().unwrap_or(part).to_owned())
+}
+
+/// "4.2.9" -> (4, 2)
+pub fn parse_series(v: &str) -> Option<(u32, u32)> {
+    let mut it = v.split('.');
+    let major = it.next()?.trim().parse().ok()?;
+    let minor: String = it.next()?.chars().take_while(|c| c.is_ascii_digit()).collect();
+    Some((major, minor.parse().ok()?))
+}
+
+/// Every Blender build has a data folder named after its series ("5.3/").
+fn data_folder_series(root: &Path) -> Option<(u32, u32)> {
+    fs::read_dir(root)
+        .ok()?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .filter_map(|e| parse_series(&e.file_name().to_string_lossy()))
+        .max()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::version_from_name;
+    use super::*;
 
     #[test]
     fn parses_launcher_folder_names() {
         assert_eq!(version_from_name("blender-5.3.0-stable.02f0899d78e3").as_deref(), Some("5.3.0"));
+        assert_eq!(version_from_name("blender-5.4.0-alpha+main.abc").as_deref(), Some("5.4.0"));
         assert_eq!(version_from_name("Blender 5.2").as_deref(), Some("5.2"));
         assert_eq!(version_from_name("custom"), None);
+        assert_eq!(parse_series("4.2.9"), Some((4, 2)));
+        assert_eq!(parse_series("2.93"), Some((2, 93)));
+    }
+
+    #[test]
+    fn channel_from_names() {
+        assert_eq!(Channel::from_name("blender-5.2.0-lts.fbe6228777e7"), Channel::Lts);
+        assert_eq!(Channel::from_name("blender-5.3.0-stable.02f0899d78e3"), Channel::Stable);
+        assert_eq!(Channel::from_name("blender-5.4.0-alpha+main.abc"), Channel::Daily);
+        assert_eq!(Channel::from_name("blender-5.2.3-candidate+main-PR164298.0ef9"), Channel::Experimental);
+        assert_eq!(Channel::from_name("my build"), Channel::Custom);
     }
 }

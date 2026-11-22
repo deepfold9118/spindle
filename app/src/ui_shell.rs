@@ -113,8 +113,8 @@ fn menus(app: &mut App, ui: &mut egui::Ui) {
             platform::open_folder(&app.sp.profiles_dir());
         }
         ui.separator();
-        if item(ui, I::X, "Exit", "Alt+F4", true) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        if item(ui, I::X, "Exit", "", true) {
+            app.quit(&ctx);
         }
     });
     ui.menu_button("View", |ui| {
@@ -123,6 +123,7 @@ fn menus(app: &mut App, ui: &mut egui::Ui) {
             (View::Running, I::ACTIVITY, "Ctrl+2"),
             (View::Addons, I::PACKAGE, "Ctrl+3"),
             (View::Profiles, I::USER, "Ctrl+4"),
+            (View::Downloads, I::DOWNLOAD, "Ctrl+5"),
         ] {
             if item(ui, icon, v.title(), key, true) {
                 app.set_view(v);
@@ -150,6 +151,13 @@ fn menus(app: &mut App, ui: &mut egui::Ui) {
         }
         if item(ui, I::REFRESH_CW, "Refresh", "F5", true) {
             app.refresh();
+        }
+        ui.separator();
+        if item(ui, I::DOWNLOAD, "Download Builds…", "Ctrl+5", true) {
+            app.set_view(View::Downloads);
+        }
+        if item(ui, I::REFRESH_CW, "Check for New Builds", "", !app.checking) {
+            app.check_updates(&ctx, true);
         }
         ui.separator();
         if item(ui, I::DOWNLOAD, "Sync Superhive Purchases", "", !app.busy("Syncing Superhive")) {
@@ -189,6 +197,7 @@ pub fn context_bar(app: &mut App, ui: &mut egui::Ui) {
                     View::Running => "Find running Blenders…",
                     View::Addons => "Find add-ons…",
                     View::Profiles => "Find profiles…",
+                    View::Downloads => "Find downloads (version, branch, PR)…",
                 };
                 ui.add(egui::TextEdit::singleline(&mut app.quick_find).hint_text(hint).desired_width(220.0));
                 if !app.quick_find.is_empty() && icon_button(ui, &pal, I::X, "Clear", false).clicked() {
@@ -196,7 +205,7 @@ pub fn context_bar(app: &mut App, ui: &mut egui::Ui) {
                 }
                 vsep(ui, &pal);
                 // Channel chips only filter builds.
-                if app.prefs.view == View::Builds {
+                if matches!(app.prefs.view, View::Builds | View::Downloads) {
                     ui.label(egui::RichText::new("Show").color(pal.muted).size(12.0));
                     let before = (app.prefs.show_stable, app.prefs.show_lts, app.prefs.show_daily, app.prefs.show_experimental);
                     dot_chip(ui, &pal, pal.green, "Stable", &mut app.prefs.show_stable);
@@ -213,6 +222,7 @@ pub fn context_bar(app: &mut App, ui: &mut egui::Ui) {
                     View::Running => I::ACTIVITY,
                     View::Addons => I::PACKAGE,
                     View::Profiles => I::USER,
+                    View::Downloads => I::DOWNLOAD,
                 };
                 ui.label(egui::RichText::new(icon).font(icon_font(14.0)).color(pal.accent_text));
                 ui.add(egui::Label::new(egui::RichText::new(app.prefs.view.title()).color(pal.text).strong()).truncate());
@@ -254,7 +264,9 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
             let now = ui.ctx().input(|i| i.time);
             if let Some(job) = app.jobs.first() {
                 ui.add(egui::Spinner::new().size(12.0).color(pal.accent_text));
-                ui.label(egui::RichText::new(format!("{}…", job.label)).size(11.5).color(pal.text));
+                let pct = job.progress.as_ref().and_then(|p| p.fraction()).map(|f| format!(" {:.0}%", f * 100.0)).unwrap_or_default();
+                let more = if app.jobs.len() > 1 { format!(" (+{} more)", app.jobs.len() - 1) } else { String::new() };
+                ui.label(egui::RichText::new(format!("{}{pct}…{more}", job.label)).size(11.5).color(pal.text));
             }
             let msg = match &app.status {
                 Some((s, until)) if *until > now => s.clone(),
@@ -263,6 +275,7 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
                     View::Running => "Blenders started by Spindle report here every few seconds, with their MCP add-on port".to_string(),
                     View::Addons => "Add-ons downloaded into Spindle's library · Install puts one into a profile, shared by every build".to_string(),
                     View::Profiles => "A profile holds preferences, add-ons and extensions shared by every build launched with it".to_string(),
+                    View::Downloads => "Official releases come from download.blender.org; Daily and Experimental from builder.blender.org · every download is SHA-256 checked".to_string(),
                 },
             };
             let col = if msg.starts_with("Error") { pal.red } else { pal.muted };
@@ -331,7 +344,7 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
     if ctx.memory(|m| m.focused().is_some()) {
         return;
     }
-    let (f5, ctrl, k1, k2, k3, k4, l) = ctx.input(|i| {
+    let (f5, ctrl, k1, k2, k3, k4, k5, l) = ctx.input(|i| {
         (
             i.key_pressed(Key::F5),
             i.modifiers.command,
@@ -339,6 +352,7 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
             i.key_pressed(Key::Num2),
             i.key_pressed(Key::Num3),
             i.key_pressed(Key::Num4),
+            i.key_pressed(Key::Num5),
             i.key_pressed(Key::L),
         )
     });
@@ -357,6 +371,9 @@ pub fn shortcuts(app: &mut App, ctx: &egui::Context) {
         }
         if k4 {
             app.set_view(View::Profiles);
+        }
+        if k5 {
+            app.set_view(View::Downloads);
         }
         if l {
             app.launch_newest(ctx);
