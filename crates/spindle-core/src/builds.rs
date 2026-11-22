@@ -300,6 +300,7 @@ mod tests {
     fn build_roots() {
         assert_eq!(build_root(Path::new("/l/builds/b-5.3/blender")), Path::new("/l/builds/b-5.3"));
         assert_eq!(build_root(Path::new("/l/builds/b-5.3/Blender.app/Contents/MacOS/Blender")), Path::new("/l/builds/b-5.3"));
+        #[cfg(windows)]
         assert_eq!(build_root(Path::new(r"C:\b\blender-5.3\blender.exe")), Path::new(r"C:\b\blender-5.3"));
     }
 
