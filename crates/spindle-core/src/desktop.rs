@@ -75,6 +75,20 @@ pub fn user_bin() -> Option<(PathBuf, bool)> {
     Some((bin, on))
 }
 
+/// Ask Explorer to refresh its icon cache. It caches program icons by path, so after an
+/// update replaces the programs the taskbar could keep the previous release's icon.
+pub fn refresh_icons() {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        if let Some(root) = std::env::var_os("SystemRoot") {
+            let tool = Path::new(&root).join(r"System32\ie4uinit.exe");
+            let _ = std::process::Command::new(tool).arg("-show").creation_flags(CREATE_NO_WINDOW).spawn();
+        }
+    }
+}
+
 /// Re-point registrations at `app_exe` when the copy they point at is gone (Spindle moved).
 /// Registrations of another copy that still exists are left alone, so starting a second
 /// copy (a development build, say) doesn't take them over.

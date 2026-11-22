@@ -1,5 +1,10 @@
 # Changelog
 
+## [Unreleased]
+
+- Upgrading (the installer, or Help > Spindle Updates) asks Windows to refresh its icon cache,
+  so the taskbar shows the new release's icon instead of a cached older one.
+
 ## [0.1.2] - 2026-11-22
 
 - **New logo**: a simpler Spindle mark that stays readable at tray and taskbar sizes. The

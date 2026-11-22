@@ -177,7 +177,9 @@ pub fn install(sp: &Spindle, release: &Release, dir: &Path, mut on_progress: imp
         let unpacked = work.join("unpacked");
         fs::create_dir_all(&unpacked)?;
         extract(&archive, &unpacked)?;
-        replace_files(&unpacked, dir)
+        let replaced = replace_files(&unpacked, dir)?;
+        crate::desktop::refresh_icons();
+        Ok(replaced)
     })();
     let _ = fs::remove_dir_all(&work);
     result

@@ -133,6 +133,10 @@ try {
         }
         # Running from a download: keep this script with the programs for -Uninstall.
         if (-not (Test-Path (Join-Path $src "install.ps1")) -and $PSCommandPath) { Copy-Item $PSCommandPath (Join-Path $Dir "install.ps1") -Force }
+        # Explorer caches program icons by path, so after an upgrade the taskbar could keep
+        # showing the previous release's icon; ask it to refresh.
+        $refresh = Join-Path $env:SystemRoot "System32\ie4uinit.exe"
+        if (Test-Path $refresh) { & $refresh -show 2>$null }
     }
     if ($PSCommandPath -and -not (Test-Path (Join-Path $Dir "install.ps1"))) { Copy-Item $PSCommandPath (Join-Path $Dir "install.ps1") }
 
