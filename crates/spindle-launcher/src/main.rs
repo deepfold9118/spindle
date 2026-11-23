@@ -180,6 +180,12 @@ enum ProfilesCmd {
 enum AddonsCmd {
     /// List archives in the add-on library.
     List,
+    /// Add add-on archives (.zip) to the library: a purchase downloaded from a store's website
+    /// when its API doesn't list it, say. Extensions and legacy add-ons both work.
+    Add {
+        #[arg(required = true)]
+        files: Vec<PathBuf>,
+    },
     /// Install the newest stored version of an add-on into a profile (every build launched
     /// with the profile sees it). Refused while a Blender runs with the profile.
     Install {
@@ -488,7 +494,7 @@ fn main() -> Result<()> {
                 let from = r.origin.as_ref().map(|o| format!("  {}", o.url)).unwrap_or_default();
                 let mut profiles: Vec<String> = Vec::new();
                 for (p, found) in &installed {
-                    if let Some(i) = found.iter().find(|i| i.id.eq_ignore_ascii_case(&r.id)) {
+                    if let Some(i) = addons::find_installed(found, &r.id) {
                         let off = if i.enabled == Some(false) { ", off" } else { "" };
                         profiles.push(format!("{p} ({}{off})", i.version.as_deref().unwrap_or("?")));
                     }
@@ -496,6 +502,24 @@ fn main() -> Result<()> {
                 let profiles = if profiles.is_empty() { "-".to_owned() } else { profiles.join(", ") };
                 println!("{:<28} {:<12} {:<8} {:<10} in: {:<24} {}{from}", r.id, r.version, r.kind, r.source, profiles, r.archive);
             }
+        }
+        Cmd::Addons(AddonsCmd::Add { files }) => {
+            let lib = AddonLibrary::new(&sp);
+            let mut failed = 0;
+            for f in &files {
+                match lib.add_file(f) {
+                    Ok(addons::FileAdded::Stored(r)) => println!("added {} {} ({}) to the add-on library", r.id, r.version, r.format.label()),
+                    Ok(addons::FileAdded::Present(r)) => println!("{} {} is already in the add-on library", r.id, r.version),
+                    Err(e) => {
+                        failed += 1;
+                        eprintln!("{}: {e:#}", f.display());
+                    }
+                }
+            }
+            if failed > 0 {
+                bail!("{failed} of {} archive(s) couldn't be added", files.len());
+            }
+            println!("install one into a profile with: spindle addons install <id> [--profile <profile>]");
         }
         Cmd::Addons(AddonsCmd::Install { id, build, profile }) => {
             let lib = AddonLibrary::new(&sp);

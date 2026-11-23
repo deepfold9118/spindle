@@ -168,6 +168,16 @@ impl eframe::App for app::App {
         self.frame_no += 1;
 
         self.poll(&ctx);
+        // Add-on archives dropped on the window go into the add-on library.
+        let dropped: Vec<std::path::PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .filter_map(|f| f.path.clone())
+                .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")))
+                .collect()
+        });
+        self.add_addon_files(&ctx, dropped);
         // Closing (title bar, Alt+F4, taskbar) hides to the tray unless quitting.
         if ctx.input(|i| i.viewport().close_requested())
             && !self.quitting

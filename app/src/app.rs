@@ -732,7 +732,7 @@ impl App {
         self.profiles
             .iter()
             .filter_map(|p| {
-                let found = self.profile_state.get(p)?.addons.iter().find(|i| i.id.eq_ignore_ascii_case(id))?;
+                let found = addons::find_installed(&self.profile_state.get(p)?.addons, id)?;
                 Some((p.as_str(), found))
             })
             .collect()
@@ -892,7 +892,7 @@ impl App {
             .and_then(|exe| spindle_core::desktop::set_blend_association(on, &exe));
         match result {
             Ok(()) if on && cfg!(windows) => {
-                self.toast(ctx, "Spindle is offered under Open with for .blend files; use Choose Default App to make it the default")
+                self.toast(ctx, "Right-click a .blend file for Open with Spindle (Windows 11: Show more options); Choose Default App makes Spindle the default")
             }
             Ok(()) if on => self.toast(ctx, "Spindle now opens .blend files"),
             Ok(()) => self.toast(ctx, "Spindle no longer opens .blend files"),
@@ -1046,6 +1046,48 @@ impl App {
     }
 
     /// Open the Add from GitHub dialog (with a link: look it up straight away).
+    /// Choose add-on archives (a purchase downloaded from a store's website, say) and add them
+    /// to the library.
+    pub fn pick_addon_files(&mut self, ctx: &egui::Context) {
+        let Some(files) = rfd::FileDialog::new().set_title("Add add-on archives to the library").add_filter("Add-on archive", &["zip"]).pick_files()
+        else {
+            return;
+        };
+        self.add_addon_files(ctx, files);
+    }
+
+    /// Add add-on archives to the library in the background (from the file picker or dropped
+    /// on the window).
+    pub fn add_addon_files(&mut self, ctx: &egui::Context, files: Vec<PathBuf>) {
+        if files.is_empty() || self.busy("Adding add-ons") {
+            return;
+        }
+        self.set_view(View::Addons);
+        let what = if files.len() == 1 { "1 archive".to_string() } else { format!("{} archives", files.len()) };
+        self.toast(ctx, format!("Adding {what} to the add-on library…"));
+        self.spawn("Adding add-ons", move || {
+            let sp = Spindle::load().map_err(|e| format!("{e:#}"))?;
+            let lib = AddonLibrary::new(&sp);
+            let (mut done, mut failed) = (Vec::new(), Vec::new());
+            for f in &files {
+                let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                match lib.add_file(f) {
+                    Ok(addons::FileAdded::Stored(r)) => done.push(format!("added {} {}", r.name, r.version)),
+                    Ok(addons::FileAdded::Present(r)) => done.push(format!("{} {} was already there", r.name, r.version)),
+                    Err(e) => failed.push(format!("{name}: {e:#}")),
+                }
+            }
+            if done.is_empty() {
+                return Err(failed.join("; "));
+            }
+            let mut msg = done.join("; ");
+            if !failed.is_empty() {
+                msg.push_str(&format!("; failed: {}", failed.join("; ")));
+            }
+            Ok(format!("Add-on library: {msg}"))
+        });
+    }
+
     pub fn open_github(&mut self, ctx: &egui::Context, link: Option<String>) {
         let start = link.is_some();
         self.dlg.github = Some(GithubDialog { link: link.unwrap_or_default(), focus: !start, ..Default::default() });

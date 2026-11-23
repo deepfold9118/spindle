@@ -305,6 +305,7 @@ pub fn source_label(source: &str) -> &str {
     match source {
         "superhive" => "Superhive",
         "github" => "GitHub",
+        "file" => "From File",
         other => other,
     }
 }
@@ -324,12 +325,16 @@ fn addons_view(app: &mut App, ui: &mut Ui) {
             &pal,
             I::PACKAGE,
             if app.addons.is_empty() { "The add-on library is empty" } else { "No add-ons match" },
-            if app.addons.is_empty() { "Add one from a GitHub repository, or sync your Superhive purchases" } else { "Clear the search to see every add-on" },
+            if app.addons.is_empty() { "Add one from a GitHub repository or a .zip file, or sync your Superhive purchases" } else { "Clear the search to see every add-on" },
         );
         if app.addons.is_empty() {
             ui.vertical_centered(|ui| {
                 if icon_text_button(ui, &pal, I::GIT_COMPARE, "Add from GitHub…", true).clicked() {
                     app.open_github(&ctx, None);
+                }
+                ui.add_space(6.0);
+                if icon_text_button(ui, &pal, I::FILE_BOX, "Add from File…", false).clicked() {
+                    app.pick_addon_files(&ctx);
                 }
                 ui.add_space(6.0);
                 if icon_text_button(ui, &pal, I::DOWNLOAD, "Sync Superhive Purchases", false).clicked() {

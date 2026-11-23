@@ -59,8 +59,9 @@ Before an older build opens a profile, Spindle says exactly what will break and 
 <td valign="top">
 
 **Opens .blend files in the right build**<br>
-Register Spindle for `.blend` files and each one opens in the build of the Blender that saved
-it, read from the file header (zstd and gzip compressed files too).
+Register Spindle for `.blend` files (**Open with Spindle** on the right-click menu, and under
+Open with) and each one opens in the build of the Blender that saved it, read from the file
+header (zstd and gzip compressed files too).
 
 </td>
 </tr>
@@ -89,7 +90,9 @@ older Blender opens them, and every restore backs up what it replaces first.
 **Add-ons from GitHub**: paste a repository link and Spindle downloads the add-on from its
 newest release, checked against the SHA-256 GitHub publishes. When there's no release to
 download, it offers to build one from the source. Superhive purchases download into the same
-add-on library (the API token stays in the OS credential store). Install puts an add-on into a
+add-on library (the API token stays in the OS credential store), and any add-on `.zip` can be
+added from a file or dropped on the window: a purchase the store's API doesn't list, say. Install
+puts an add-on into a
 profile, so every build launched with that profile has it, and the library shows which profiles
 each add-on is in, at which version, and whether it's switched on.
 
@@ -249,14 +252,25 @@ profile blocks. A file newer than every build asks first.
   (compiled code, generated files, wheels that aren't committed) can't be built this way.
 - **Installing**: add-ons go into a profile, never into a build. Extensions go into the
   profile's `user_default` repository (Blender 4.2+); legacy add-ons go through Blender's add-on
-  installer into the profile's `scripts/addons`. Either way they're enabled and the preferences
-  are saved. You choose only the profile: Spindle runs Blender's installer with a library build
+  installer into the profile's `scripts/addons`. Either way they're switched on in the saved
+  preferences without being run during the install (some add-ons can't start in a background
+  Blender); Blender starts them the next time it opens with the profile. You choose only the profile: Spindle runs Blender's installer with a library build
   that can install the add-on (4.2+ for an extension, inside the add-on's own Blender range),
   preferring the series that last saved the profile's preferences so they keep their format.
   It won't install while a Blender is running with the profile, since that Blender saves its
   own preferences when it quits and would switch the add-on off again.
 - **Updating**: **Check GitHub for a Newer Version** on a GitHub add-on adds its link again,
   which picks up a newer release or commit.
+
+### Add-ons from a file
+
+Superhive's API lists extensions (add-ons with a `blender_manifest.toml`) only, so purchases that
+are legacy add-ons (`bl_info`, MESHmachine for one) never show up in Sync Superhive Purchases.
+Download those from the store's website and add the `.zip` with **Add Add-on from File…**
+(Library menu, Task Panel, or the empty add-on library), by dropping it on Spindle's window, or
+with `spindle addons add <zip>...`. Spindle reads what the archive is from its manifest or
+`bl_info` (nothing in it is run) and stores a copy in the add-on library under **From File**;
+adding a version the library already has does nothing. Install it into a profile as usual.
 
 GitHub requests are anonymous (60 an hour) unless `GITHUB_TOKEN` or `GH_TOKEN` is set, which
 also reaches private repositories.
@@ -285,6 +299,7 @@ spindle self-update [--check]
 spindle superhive login | list | sync
 spindle addons list
 spindle addons github <link> [--build]  # newest release; else offers a build from the source
+spindle addons add <zip>...             # add-on archives from disk (store downloads the API doesn't list)
 spindle addons install <id> [--profile <profile>]  # into a profile; Spindle picks the installer build
 ```
 

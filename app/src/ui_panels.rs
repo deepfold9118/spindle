@@ -106,7 +106,11 @@ fn library_tree(app: &mut App, ui: &mut egui::Ui) {
                 ui.label(egui::RichText::new("        Library is empty").size(11.5).color(pal.faint));
             }
             for (source, n) in sources {
-                let icon = if source == spindle_core::github::SOURCE { I::GIT_COMPARE } else { I::SHIELD_CHECK };
+                let icon = match source.as_str() {
+                    spindle_core::github::SOURCE => I::GIT_COMPARE,
+                    spindle_core::addons::FILE_SOURCE => I::FILE_BOX,
+                    _ => I::SHIELD_CHECK,
+                };
                 if tree_row(ui, &pal, 1, None, icon, crate::ui_center::source_label(&source), Some(n), false).0.clicked() {
                     app.set_view(View::Addons);
                 }
@@ -195,6 +199,10 @@ fn tasks(app: &mut App, ui: &mut egui::Ui) {
         }
         if task_row(ui, &pal, I::GIT_COMPARE, None, "Add Add-on from GitHub…", true).clicked() {
             app.open_github(&ctx, None);
+        }
+        let adding = app.busy("Adding add-ons");
+        if task_row(ui, &pal, I::FILE_BOX, None, if adding { "Adding Add-ons…" } else { "Add Add-on from File…" }, !adding).clicked() {
+            app.pick_addon_files(&ctx);
         }
         let ups = app.updates.len();
         let label = if ups > 0 { format!("Download Builds ({ups} new)") } else { "Download Builds".to_string() };
@@ -396,7 +404,8 @@ fn tasks(app: &mut App, ui: &mut egui::Ui) {
         let can_associate = !cfg!(target_os = "macos");
         if task_row(ui, &pal, check(app.opens_blend), None, "Open .blend Files with Spindle", can_associate)
             .on_hover_text(if can_associate {
-                "Spindle opens each file in the build that saved it (or the default build), after checking the profile"
+                "Adds Open with Spindle to the right-click menu of .blend files (Windows 11: under Show more options) and Spindle to Open with. \
+                 Spindle opens each file in the build that saved it (or the default build), after checking the profile"
             } else {
                 "On macOS, file types come from app bundles; use `spindle open <file>` instead"
             })

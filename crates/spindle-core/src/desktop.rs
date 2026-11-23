@@ -2,10 +2,10 @@
 //! with Spindle (which picks a build for each file, see `blendfile`), and putting the
 //! programs on PATH.
 //!
-//! - Windows: `HKCU\...\CurrentVersion\Run`, an "Open with" registration under
-//!   `HKCU\Software\Classes`, and the user `Path` (`HKCU\Environment`). Windows doesn't let
-//!   programs make themselves the default app; `open_default_apps()` opens the Settings page
-//!   where the user picks Spindle.
+//! - Windows: `HKCU\...\CurrentVersion\Run`, an "Open with" registration and an "Open with
+//!   Spindle" right-click item for `.blend` under `HKCU\Software\Classes`, and the user `Path`
+//!   (`HKCU\Environment`). Windows doesn't let programs make themselves the default app;
+//!   `open_default_apps()` opens the Settings page where the user picks Spindle.
 //! - Linux: `~/.config/autostart/spindle.desktop`, `~/.local/share/applications/
 //!   spindle.desktop` with the `application/x-blender` MIME type (also made the default),
 //!   and links in `~/.local/bin`.
@@ -97,7 +97,8 @@ pub fn refresh(app_exe: &Path) {
     if autostart().is_some_and(|p| gone(&p)) {
         let _ = set_autostart(true, app_exe);
     }
-    if blend_association().is_some_and(|p| gone(&p)) {
+    // Also when this copy's registration predates part of it (the right-click item, 0.1.8).
+    if blend_association().is_some_and(|p| gone(&p) || (p == app_exe && imp::blend_incomplete())) {
         let _ = set_blend_association(true, app_exe);
     }
     if let (Some(old), Some(dir)) = (path_dir(), app_exe.parent()) {
@@ -162,6 +163,9 @@ mod imp {
     const RUN_VALUE: &str = "Spindle";
     const PROGID: &str = "Spindle.blend";
     const CLASSES: &str = r"Software\Classes";
+    /// Right-click item on `.blend` files, whichever app opens them by default. Windows 11
+    /// lists it under "Show more options" (its short menu only takes packaged apps' items).
+    const VERB: &str = r"Software\Classes\SystemFileAssociations\.blend\shell\Spindle";
 
     fn hkcu() -> RegKey {
         RegKey::predef(HKEY_CURRENT_USER)
@@ -212,7 +216,12 @@ mod imp {
             app.set_value("FriendlyAppName", &"Spindle")?;
             app.create_subkey("SupportedTypes")?.0.set_value(".blend", &"")?;
             app.create_subkey(r"shell\open\command")?.0.set_value("", &open)?;
+            let (verb, _) = root.create_subkey(VERB)?;
+            verb.set_value("", &"Open with Spindle")?;
+            verb.set_value("Icon", &icon)?;
+            verb.create_subkey("command")?.0.set_value("", &open)?;
         } else {
+            let _ = root.delete_subkey_all(VERB);
             let _ = root.delete_subkey_all(format!(r"{CLASSES}\{PROGID}"));
             let _ = root.delete_subkey_all(app_key(app_exe));
             if let Ok(owp) = root.open_subkey_with_flags(format!(r"{CLASSES}\.blend\OpenWithProgids"), KEY_READ | KEY_WRITE) {
@@ -230,6 +239,11 @@ mod imp {
 
     pub fn open_default_apps() -> bool {
         std::process::Command::new("explorer.exe").arg("ms-settings:defaultapps").spawn().is_ok()
+    }
+
+    /// The registration lacks the right-click item (made by Spindle before 0.1.8).
+    pub fn blend_incomplete() -> bool {
+        hkcu().open_subkey_with_flags(format!(r"{VERB}\command"), KEY_READ).is_err()
     }
 
     /// `%LOCALAPPDATA%\Programs\Spindle` -> `C:\Users\me\AppData\Local\Programs\Spindle`
@@ -388,6 +402,10 @@ mod imp {
         false
     }
 
+    pub fn blend_incomplete() -> bool {
+        false
+    }
+
     pub fn path_dir() -> Option<PathBuf> {
         super::linked_dir()
     }
@@ -458,6 +476,10 @@ mod imp {
     }
 
     pub fn open_default_apps() -> bool {
+        false
+    }
+
+    pub fn blend_incomplete() -> bool {
         false
     }
 

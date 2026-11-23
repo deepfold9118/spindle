@@ -163,6 +163,9 @@ fn menus(app: &mut App, ui: &mut egui::Ui) {
         if item(ui, I::GIT_COMPARE, "Add Add-on from GitHub…", "", true) {
             app.open_github(&ctx, None);
         }
+        if item(ui, I::FILE_BOX, "Add Add-on from File…", "", !app.busy("Adding add-ons")) {
+            app.pick_addon_files(&ctx);
+        }
         if item(ui, I::DOWNLOAD, "Sync Superhive Purchases", "", !app.busy("Syncing Superhive")) {
             app.sync_superhive(&ctx);
         }
@@ -286,7 +289,7 @@ pub fn status_bar(app: &mut App, ui: &mut egui::Ui) {
                 _ => match app.prefs.view {
                     View::Builds => "Double-click a build to launch it with the selected profile · Agents see running Blenders through spindle-mcp".to_string(),
                     View::Running => "Blenders started by Spindle report here every few seconds, with their MCP add-on port".to_string(),
-                    View::Addons => "Add-ons downloaded into Spindle's library · Install puts one into a profile, shared by every build".to_string(),
+                    View::Addons => "Add-ons downloaded into Spindle's library · drop a .zip here to add one · Install puts one into a profile, shared by every build".to_string(),
                     View::Profiles => "A profile holds preferences, add-ons and extensions shared by every build launched with it".to_string(),
                     View::Downloads => "Official releases come from download.blender.org; Daily and Experimental from builder.blender.org · every download is SHA-256 checked".to_string(),
                 },

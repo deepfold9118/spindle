@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.1.8] - 2026-11-23
+
+- **Add add-ons from a file**: Add Add-on from File… (Library menu, Task Panel, empty add-on
+  library), dropping `.zip` files on the window, and `spindle addons add <zip>...` add add-on
+  archives to the library under From File. This covers store purchases the store's API doesn't
+  list: Superhive's API lists only extensions, so legacy add-ons such as MESHmachine never appear
+  in Sync Superhive Purchases. Nothing in the archive is run; adding a version the library
+  already has does nothing.
+- **Open with Spindle on the right-click menu**: Open .blend Files with Spindle (and the installer's
+  `-OpenBlendFiles`) now also adds Open with Spindle to the right-click menu of `.blend` files on
+  Windows, whichever app opens them by default (Windows 11 lists it under Show more options).
+  An existing registration gains it when 0.1.8 starts.
+- Installing an add-on no longer runs it in the background Blender: it's switched on in the saved
+  preferences and starts the next time Blender opens with the profile. Some add-ons crashed the
+  background Blender while registering (MESHmachine 0.20.1 in Blender 5.3), which failed the
+  install.
+- The add-on library and `spindle addons list` no longer show an add-on as "off" when a profile
+  has a switched-off copy of it in another repository next to the copy it uses.
+
 ## [0.1.7] - 2026-11-23
 
 - **Add-ons install into profiles, not builds**: the install dialog asks only for the profile.

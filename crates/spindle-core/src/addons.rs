@@ -3,6 +3,7 @@ use crate::profile::Profile;
 use crate::{Spindle, backup, compat, launch, version};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::fs::{self, File};
 use std::io::Read;
@@ -73,6 +74,18 @@ pub struct AddonRecord {
     pub origin: Option<Origin>,
 }
 
+/// Library source of archives added from a file: a purchase downloaded from a store's
+/// website when its API doesn't list it, say.
+pub const FILE_SOURCE: &str = "file";
+
+/// What adding an archive file did.
+#[derive(Debug, Clone)]
+pub enum FileAdded {
+    Stored(AddonRecord),
+    /// The library already had that version (from any source).
+    Present(AddonRecord),
+}
+
 /// Version order, ignoring build metadata ("1.2.0+abc1234" is a build of 1.2.0), then the
 /// newer download first among equal versions.
 fn order(a: &AddonRecord, b: &AddonRecord) -> Ordering {
@@ -133,6 +146,34 @@ impl AddonLibrary {
         Ok(out)
     }
 
+    /// Add an add-on archive from disk: what it is comes from its `blender_manifest.toml` or
+    /// `bl_info`, and a copy is stored under [`FILE_SOURCE`]. Nothing in it is run.
+    pub fn add_file(&self, path: &Path) -> Result<FileAdded> {
+        let info = inspect_zip(path).with_context(|| format!("reading {}", path.display()))?;
+        if let Some(have) = self.list()?.into_iter().find(|r| r.id.eq_ignore_ascii_case(&info.id) && r.version == info.version) {
+            return Ok(FileAdded::Present(have));
+        }
+        let bytes = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| format!("{}.zip", info.id));
+        let rec = AddonRecord {
+            id: info.id,
+            name: info.name,
+            version: info.version,
+            kind: info.kind,
+            source: FILE_SOURCE.into(),
+            archive: sanitize(&file_name),
+            sha256: hex::encode(Sha256::digest(&bytes)),
+            blender_version_min: info.blender_version_min,
+            blender_version_max: info.blender_version_max,
+            platforms: info.platforms,
+            fetched: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs(),
+            format: info.format,
+            origin: None,
+        };
+        self.store(&rec, &bytes)?;
+        Ok(FileAdded::Stored(rec))
+    }
+
     /// Newest stored version of an add-on, from any source.
     pub fn latest(&self, id: &str) -> Result<Option<AddonRecord>> {
         Ok(self.list()?.into_iter().filter(|r| r.id.eq_ignore_ascii_case(id)).max_by(order))
@@ -167,7 +208,23 @@ impl AddonLibrary {
         // back them up first, as a launch would.
         let _ = backup::before_launch(sp, build, profile);
         let archive = self.archive_path(rec).to_string_lossy().into_owned();
-        let args: Vec<String> = match rec.format {
+        let run = |args: &[&str]| -> Result<String> {
+            let args: Vec<String> = args.iter().map(|a| (*a).to_owned()).collect();
+            let out = launch::run_background(sp, build, profile, &args).map_err(|e| {
+                // Spindle's scripts explain a failure in one line; Blender's traceback is noise.
+                let text = format!("{e:#}");
+                match text.lines().find_map(|l| l.trim().strip_prefix("Spindle error: ")) {
+                    Some(why) => anyhow::anyhow!("{} {}: {why}", rec.name, rec.version),
+                    None => e,
+                }
+            })?;
+            Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+        };
+        // Both kinds are switched on in the saved preferences without being run here: an
+        // add-on's register() can't always cope with a background Blender (no window, no GPU),
+        // and some crash it. Blender starts it the next time it opens with the profile.
+        // Paths go after `--`, which Blender leaves to the script (no quoting issues).
+        match rec.format {
             Format::Extension => {
                 if let Some(s) = build.series().filter(|s| *s < compat::EXTENSIONS_SINCE) {
                     bail!(
@@ -178,24 +235,15 @@ impl AddonLibrary {
                         s.1
                     );
                 }
-                ["--command", "extension", "install-file", "--repo", "user_default", "--enable", &archive]
-                    .map(str::to_owned)
-                    .to_vec()
+                let mut out = run(&["--command", "extension", "install-file", "--repo", "user_default", &archive])?;
+                if !profile.root.join("extensions").join("user_default").join(&rec.id).join("blender_manifest.toml").is_file() {
+                    bail!("{} {}: Blender installed it, but not as {} in the profile's user_default repository", rec.name, rec.version, rec.id);
+                }
+                out += &run(&["--python-exit-code", "1", "--python-expr", SWITCH_ON, "--", &format!("bl_ext.user_default.{}", rec.id)])?;
+                Ok(out)
             }
-            // The paths go after `--`, which Blender leaves to the script (no quoting issues).
-            Format::Legacy => ["--python-exit-code", "1", "--python-expr", LEGACY_INSTALL, "--", &archive, &rec.id]
-                .map(str::to_owned)
-                .to_vec(),
-        };
-        let out = launch::run_background(sp, build, profile, &args).map_err(|e| {
-            // The legacy installer explains a failure in one line; Blender's traceback is noise.
-            let text = format!("{e:#}");
-            match text.lines().find_map(|l| l.trim().strip_prefix("Spindle error: ")) {
-                Some(why) => anyhow::anyhow!("{} {}: {why}", rec.name, rec.version),
-                None => e,
-            }
-        })?;
-        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+            Format::Legacy => run(&["--python-exit-code", "1", "--python-expr", LEGACY_INSTALL, "--", &archive, &rec.id]),
+        }
     }
 }
 
@@ -240,6 +288,14 @@ pub struct InstalledAddon {
     pub repo: Option<String>,
     /// Enabled in the profile's preferences; None when there are none Spindle can read.
     pub enabled: Option<bool>,
+}
+
+/// The copy of an add-on a profile uses, when it has several (the same extension in two
+/// repositories, say): one that's switched on, else the first.
+pub fn find_installed<'a>(found: &'a [InstalledAddon], id: &str) -> Option<&'a InstalledAddon> {
+    let mut copies = found.iter().filter(|i| i.id.eq_ignore_ascii_case(id)).peekable();
+    let first = *copies.peek()?;
+    Some(copies.find(|i| i.enabled == Some(true)).unwrap_or(first))
 }
 
 /// Add-ons installed in a profile folder: extensions in its local repositories
@@ -296,9 +352,27 @@ def step(what, op, **kw):
         print('Spindle error: ' + what + (': ' + why.strip() if why else ''), file=sys.stderr)
         sys.exit(1)
 step('Blender could not install it', bpy.ops.preferences.addon_install, filepath=archive, overwrite=True)
-step('it installed but failed to enable', bpy.ops.preferences.addon_enable, module=module)
+import addon_utils
+if module not in {m.__name__ for m in addon_utils.modules(refresh=True)}:
+    print('Spindle error: it installed, but Blender finds no add-on called ' + module, file=sys.stderr)
+    sys.exit(1)
+prefs = bpy.context.preferences
+if prefs.addons.get(module) is None:
+    prefs.addons.new().module = module
 bpy.ops.wm.save_userpref()
-print('Spindle: installed and enabled', module)
+print('Spindle: installed and switched on', module)
+";
+
+/// Run inside Blender with `-- <module>`: switch an installed add-on on in the saved
+/// preferences without running it (Blender starts it the next time it opens).
+const SWITCH_ON: &str = "\
+import bpy, sys
+module = sys.argv[sys.argv.index('--') + 1]
+prefs = bpy.context.preferences
+if prefs.addons.get(module) is None:
+    prefs.addons.new().module = module
+bpy.ops.wm.save_userpref()
+print('Spindle: switched on', module)
 ";
 
 fn read_dirs(dir: &Path) -> Result<Vec<PathBuf>> {
@@ -605,6 +679,54 @@ mod tests {
                 ("uv_squares", Some("1.14.1"), None, Some(true)),
             ]
         );
+        // The same extension in two repositories: the enabled copy is the one that counts.
+        let dup = root.join("extensions/superhivemarket_com/etr_curves_toolkit");
+        fs::create_dir_all(&dup).unwrap();
+        fs::write(dup.join("blender_manifest.toml"), "id = \"etr_curves_toolkit\"
+version = \"0.26.0\"
+").unwrap();
+        let found = installed_in(&root);
+        assert_eq!(found.iter().filter(|a| a.id == "etr_curves_toolkit").count(), 2);
+        let used = find_installed(&found, "ETR_curves_toolkit").unwrap();
+        assert_eq!((used.repo.as_deref(), used.enabled), (Some("user_default"), Some(true)));
+        assert!(find_installed(&found, "missing").is_none());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn adds_archive_files() {
+        let root = std::env::temp_dir().join(format!("spindle-addfile-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let lib = AddonLibrary { root: root.join("addons") };
+        let zip_at = |name: &str, files: &[(&str, &str)]| {
+            let path = root.join(name);
+            let mut z = zip::ZipWriter::new(File::create(&path).unwrap());
+            for (n, body) in files {
+                z.start_file(*n, zip::write::SimpleFileOptions::default()).unwrap();
+                std::io::Write::write_all(&mut z, body.as_bytes()).unwrap();
+            }
+            z.finish().unwrap();
+            path
+        };
+        let legacy = zip_at("MESHmachine_0.20.1.zip", &[("MESHmachine/__init__.py", "bl_info = {'name': 'MESHmachine', 'version': (0, 20, 1), 'blender': (4, 2, 0)}
+")]);
+        let FileAdded::Stored(rec) = lib.add_file(&legacy).unwrap() else { panic!("expected a new entry") };
+        assert_eq!((rec.id.as_str(), rec.version.as_str(), rec.format, rec.source.as_str()), ("MESHmachine", "0.20.1", Format::Legacy, FILE_SOURCE));
+        assert_eq!(rec.blender_version_min.as_deref(), Some("4.2.0"));
+        assert!(lib.archive_path(&rec).is_file());
+        assert!(matches!(lib.add_file(&legacy).unwrap(), FileAdded::Present(_)), "the same version again is already there");
+
+        let ext = zip_at("thing.zip", &[("blender_manifest.toml", "id = \"thing\"
+version = \"1.0.0\"
+name = \"Thing\"
+")]);
+        let FileAdded::Stored(rec) = lib.add_file(&ext).unwrap() else { panic!("expected a new entry") };
+        assert_eq!((rec.name.as_str(), rec.format), ("Thing", Format::Extension));
+        assert_eq!(lib.list().unwrap().len(), 2);
+
+        let junk = zip_at("junk.zip", &[("readme.txt", "hi")]);
+        assert!(lib.add_file(&junk).unwrap_err().to_string().contains("reading"));
         let _ = fs::remove_dir_all(&root);
     }
 }
