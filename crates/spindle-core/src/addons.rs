@@ -1,6 +1,6 @@
-use crate::builds::Build;
+use crate::builds::{self, Build};
 use crate::profile::Profile;
-use crate::{Spindle, compat, launch, version};
+use crate::{Spindle, backup, compat, launch, version};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -138,11 +138,34 @@ impl AddonLibrary {
         Ok(self.list()?.into_iter().filter(|r| r.id.eq_ignore_ascii_case(id)).max_by(order))
     }
 
+    /// Install a stored archive into a profile and enable it, with a library build Spindle
+    /// picks to run Blender's installer ([`pick_installer`]). Returns that build.
+    pub fn install_into(&self, sp: &Spindle, profile: &Profile, rec: &AddonRecord) -> Result<Build> {
+        let builds = builds::list(sp)?;
+        let build = pick_installer(&builds, backup::prefs_saved_by(&profile.root), rec)?.clone();
+        self.install(sp, &build, profile, rec)?;
+        Ok(build)
+    }
+
     /// Install a stored archive into a profile with the given build and enable it: an
     /// extension through the build's own extension tooling (into the profile's local
     /// `user_default` repository), a legacy add-on through Blender's add-on installer (into
-    /// the profile's `scripts/addons`). Preferences are saved so the add-on stays enabled.
+    /// the profile's `scripts/addons`). Preferences are saved so the add-on stays enabled,
+    /// which is why it's refused while a Blender runs with the profile: that Blender saves
+    /// its own preferences when it quits.
     pub fn install(&self, sp: &Spindle, build: &Build, profile: &Profile, rec: &AddonRecord) -> Result<String> {
+        let running = backup::running_with(sp, &profile.name);
+        if !running.is_empty() {
+            bail!(
+                "Blender is running with profile '{}' (pid {}); close it first, or it saves its preferences when it quits and switches {} off again",
+                profile.name,
+                running.iter().map(u32::to_string).collect::<Vec<_>>().join(", "),
+                rec.name
+            );
+        }
+        // Installing saves the preferences, so an older build would rewrite newer ones:
+        // back them up first, as a launch would.
+        let _ = backup::before_launch(sp, build, profile);
         let archive = self.archive_path(rec).to_string_lossy().into_owned();
         let args: Vec<String> = match rec.format {
             Format::Extension => {
@@ -174,6 +197,88 @@ impl AddonLibrary {
         })?;
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
+}
+
+/// The build that installs `rec` into a profile whose preferences Blender `prefs` saved
+/// (None: no preferences yet). Only builds that can install it qualify: Blender 4.2+ for an
+/// extension, and inside the add-on's own Blender range. Installing saves the preferences,
+/// so of those it takes the oldest series that isn't older than the preferences (newest
+/// build in it), which keeps them readable by the builds that read them now; failing that,
+/// the newest.
+pub fn pick_installer<'a>(builds: &'a [Build], prefs: Option<(u32, u32)>, rec: &AddonRecord) -> Result<&'a Build> {
+    let full = |b: &Build| b.version.clone().or_else(|| b.series().map(|(x, y)| format!("{x}.{y}.0")));
+    let fits = |b: &&Build| {
+        let (Some(v), Some(series)) = (full(b), b.series()) else { return false };
+        (rec.format == Format::Legacy || series >= compat::EXTENSIONS_SINCE)
+            && rec.blender_version_min.as_deref().is_none_or(|min| version::compare(&v, min) != Ordering::Less)
+            && rec.blender_version_max.as_deref().is_none_or(|max| version::compare(&v, max) == Ordering::Less)
+    };
+    let mut ok: Vec<&Build> = builds.iter().filter(fits).collect();
+    if ok.is_empty() {
+        let min = rec.blender_version_min.clone().or_else(|| (rec.format == Format::Extension).then(|| "4.2".to_owned()));
+        let range = match (min, &rec.blender_version_max) {
+            (Some(min), Some(max)) => format!("Blender {min} or newer, older than {max},"),
+            (Some(min), None) => format!("Blender {min} or newer"),
+            (None, Some(max)) => format!("a Blender older than {max}"),
+            (None, None) => "a Blender build".to_owned(),
+        };
+        bail!("{} needs {range} to install, and the library has none; download one under Download Builds", rec.name);
+    }
+    ok.sort_by(|a, b| version::compare(&full(b).unwrap_or_default(), &full(a).unwrap_or_default()));
+    let series = prefs.and_then(|p| ok.iter().filter_map(|b| b.series()).filter(|s| *s >= p).min());
+    Ok(series.and_then(|s| ok.iter().find(|b| b.series() == Some(s)).copied()).unwrap_or(ok[0]))
+}
+
+/// An add-on found installed in a profile.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct InstalledAddon {
+    /// Extension id (its folder in the repository) or legacy module name.
+    pub id: String,
+    pub version: Option<String>,
+    pub format: Format,
+    /// Extension repository folder ("user_default", "blender_org", ...); None for a legacy add-on.
+    pub repo: Option<String>,
+    /// Enabled in the profile's preferences; None when there are none Spindle can read.
+    pub enabled: Option<bool>,
+}
+
+/// Add-ons installed in a profile folder: extensions in its local repositories
+/// (`extensions/<repo>/<id>`) and legacy add-ons in `scripts/addons`.
+pub fn installed_in(profile_root: &Path) -> Vec<InstalledAddon> {
+    let prefs = fs::read(profile_root.join("config").join("userpref.blend")).ok();
+    // Compressed preferences hide the module names.
+    let prefs = prefs.as_deref().filter(|b| b.starts_with(b"BLENDER"));
+    let enabled = |module: &str| prefs.map(|b| compat::enabled_in(Some(b), module));
+    let visible = |p: &Path| p.file_name().map(|n| n.to_string_lossy().into_owned()).filter(|n| !n.starts_with(['.', '_']));
+    let mut out = Vec::new();
+    for repo in read_dirs(&profile_root.join("extensions")).unwrap_or_default() {
+        let Some(repo_name) = visible(&repo) else { continue };
+        for dir in read_dirs(&repo).unwrap_or_default() {
+            let Some(id) = visible(&dir) else { continue };
+            let Ok(text) = fs::read_to_string(dir.join("blender_manifest.toml")) else { continue };
+            out.push(InstalledAddon {
+                version: parse_manifest(&text).ok().map(|i| i.version),
+                format: Format::Extension,
+                enabled: enabled(&format!("bl_ext.{repo_name}.{id}")),
+                repo: Some(repo_name.clone()),
+                id,
+            });
+        }
+    }
+    for entry in fs::read_dir(profile_root.join("scripts").join("addons")).into_iter().flatten().flatten() {
+        let path = entry.path();
+        let Some(name) = visible(&path) else { continue };
+        let (module, source) = if path.is_dir() {
+            (name, path.join("__init__.py"))
+        } else if let Some(m) = name.strip_suffix(".py") {
+            (m.to_owned(), path.clone())
+        } else {
+            continue;
+        };
+        let Some(info) = fs::read_to_string(&source).ok().and_then(|s| parse_bl_info(&s, &module)) else { continue };
+        out.push(InstalledAddon { enabled: enabled(&module), id: module, version: Some(info.version), format: Format::Legacy, repo: None });
+    }
+    out
 }
 
 /// Run inside Blender with `-- <archive> <module>`. A failing step prints one
@@ -415,5 +520,91 @@ mod tests {
         };
         assert_eq!(order(&rec("1.2.0+fff0000", 1), &rec("1.2.0+0000fff", 2)), Ordering::Less);
         assert_eq!(order(&rec("1.10.0+aaa", 1), &rec("1.9.0+bbb", 2)), Ordering::Greater);
+    }
+
+    fn extension(min: Option<&str>, max: Option<&str>) -> AddonRecord {
+        AddonRecord {
+            id: "etr_curves_toolkit".into(),
+            name: "Curve Toolkit".into(),
+            version: "0.27.0".into(),
+            kind: "add-on".into(),
+            source: "github".into(),
+            archive: "a.zip".into(),
+            sha256: String::new(),
+            blender_version_min: min.map(str::to_owned),
+            blender_version_max: max.map(str::to_owned),
+            platforms: Vec::new(),
+            fetched: 0,
+            format: Format::Extension,
+            origin: None,
+        }
+    }
+
+    #[test]
+    fn installer_keeps_the_preferences_format() {
+        let build = |v: &str| Build {
+            name: format!("blender-{v}"),
+            executable: PathBuf::from(format!("none/{v}/blender.exe")),
+            version: Some(v.to_owned()),
+            external: true,
+            channel: crate::builds::Channel::Custom,
+            meta: None,
+            favourite: false,
+        };
+        let builds = vec![build("4.1.1"), build("5.2.4"), build("5.3.0"), build("5.3.1"), build("5.4.0")];
+        let pick = |prefs, rec: &AddonRecord| pick_installer(&builds, prefs, rec).map(|b| b.name.clone());
+        let any = extension(None, None);
+        // Same series as the preferences, newest build in it.
+        assert_eq!(pick(Some((5, 3)), &any).unwrap(), "blender-5.3.1");
+        // No build of that series: the next one up, not the newest.
+        assert_eq!(pick(Some((5, 1)), &any).unwrap(), "blender-5.2.4");
+        // Everything is older than the preferences, or there are none yet: the newest.
+        assert_eq!(pick(Some((6, 0)), &any).unwrap(), "blender-5.4.0");
+        assert_eq!(pick(None, &any).unwrap(), "blender-5.4.0");
+        // The add-on's own range wins over the preferences.
+        assert_eq!(pick(Some((5, 2)), &extension(Some("5.3.0"), None)).unwrap(), "blender-5.3.1");
+        assert_eq!(pick(Some((5, 4)), &extension(None, Some("5.4.0"))).unwrap(), "blender-5.3.1");
+        // Extensions need 4.2+; nothing fits: say what's needed.
+        let only_old = vec![build("4.1.1")];
+        let err = pick_installer(&only_old, None, &any).unwrap_err().to_string();
+        assert!(err.contains("Blender 4.2 or newer"), "{err}");
+        let err = pick_installer(&builds, None, &extension(Some("6.0.0"), None)).unwrap_err().to_string();
+        assert!(err.contains("Curve Toolkit needs Blender 6.0.0 or newer"), "{err}");
+    }
+
+    #[test]
+    fn finds_what_a_profile_has_installed() {
+        let root = std::env::temp_dir().join(format!("spindle-installed-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let ext = root.join("extensions/user_default/etr_curves_toolkit");
+        fs::create_dir_all(&ext).unwrap();
+        fs::write(ext.join("blender_manifest.toml"), "id = \"etr_curves_toolkit\"\nversion = \"0.27.0\"\n").unwrap();
+        fs::create_dir_all(root.join("extensions/blender_org/node_arrange")).unwrap();
+        fs::write(root.join("extensions/blender_org/node_arrange/blender_manifest.toml"), "id = \"node_arrange\"\nversion = \"1.4.0\"\n").unwrap();
+        fs::create_dir_all(root.join("extensions/.cache/x")).unwrap();
+        fs::create_dir_all(root.join("scripts/addons/uv_squares")).unwrap();
+        fs::write(root.join("scripts/addons/uv_squares/__init__.py"), "bl_info = {\"name\": \"UV Squares\", \"version\": (1, 14, 1)}\n").unwrap();
+        fs::write(root.join("scripts/addons/single.py"), "bl_info = {'name': 'Single', 'version': (2, 0)}\n").unwrap();
+        fs::write(root.join("scripts/addons/not_an_addon.py"), "print('hi')\n").unwrap();
+        fs::create_dir_all(root.join("config")).unwrap();
+
+        // No preferences yet: enabled is unknown.
+        assert!(installed_in(&root).iter().all(|a| a.enabled.is_none()));
+
+        fs::write(root.join("config/userpref.blend"), b"BLENDER17-01v0503\0bl_ext.user_default.etr_curves_toolkit\0uv_squares\0").unwrap();
+        let mut found = installed_in(&root);
+        found.sort_by(|a, b| a.id.cmp(&b.id));
+        let summary: Vec<(&str, Option<&str>, Option<&str>, Option<bool>)> =
+            found.iter().map(|a| (a.id.as_str(), a.version.as_deref(), a.repo.as_deref(), a.enabled)).collect();
+        assert_eq!(
+            summary,
+            vec![
+                ("etr_curves_toolkit", Some("0.27.0"), Some("user_default"), Some(true)),
+                ("node_arrange", Some("1.4.0"), Some("blender_org"), Some(false)),
+                ("single", Some("2.0"), None, Some(false)),
+                ("uv_squares", Some("1.14.1"), None, Some(true)),
+            ]
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 }

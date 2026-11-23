@@ -460,16 +460,33 @@ fn github(app: &mut App, ctx: &egui::Context) {
     }
 }
 
+/// Install an add-on into a profile. Builds don't come into it: every build launched with
+/// the profile sees the add-on, and Spindle picks the build that runs Blender's installer.
 fn install(app: &mut App, ctx: &egui::Context) {
-    let Some((id, mut build, mut profile)) = app.dlg.install.clone() else { return };
+    let Some((id, mut profile)) = app.dlg.install.clone() else { return };
     let pal = app.pal;
     let mut go = false;
     let mut close = false;
-    let builds: Vec<(String, String)> = app.builds.iter().map(|b| (b.name.clone(), b.version.clone().unwrap_or(b.name.clone()))).collect();
     let profiles = app.profiles.clone();
     let rec = app.latest_addons().into_iter().find(|a| a.id == id).cloned();
+    // What each profile has now, for the list and the status line.
+    let has: Vec<(String, spindle_core::addons::InstalledAddon)> =
+        app.installs_of(&id).into_iter().map(|(p, i)| (p.to_owned(), i.clone())).collect();
+    let status_of = |p: &str| -> String {
+        let Some(r) = &rec else { return String::new() };
+        match has.iter().find(|(name, _)| name == p).map(|(_, i)| i) {
+            None => format!("Not in '{p}' yet."),
+            Some(i) if i.version.as_deref() == Some(r.version.as_str()) => {
+                format!("'{p}' already has {}; installing replaces it and switches it on.", r.version)
+            }
+            Some(i) => format!("'{p}' has {}; this replaces it with {}.", i.version.as_deref().unwrap_or("another version"), r.version),
+        }
+    };
+    let running: Vec<String> = app.running_with(&profile).iter().map(|i| format!("Blender {}", i.blender_version)).collect();
+    let prefs = app.profile_state.get(&profile).and_then(|s| s.prefs_by);
+    let no_build = rec.as_ref().and_then(|r| spindle_core::addons::pick_installer(&app.builds, prefs, r).err().map(|e| format!("{e:#}")));
     egui::Modal::new(egui::Id::new("m_install")).show(ctx, |ui| {
-        ui.set_width(380.0);
+        ui.set_width(420.0);
         let title = rec.as_ref().map(|r| format!("Install {} {}", r.name, r.version)).unwrap_or_else(|| format!("Install {id}"));
         ui.label(egui::RichText::new(title).font(bold(15.0)));
         ui.add_space(4.0);
@@ -477,37 +494,50 @@ fn install(app: &mut App, ctx: &egui::Context) {
             Some(spindle_core::addons::Format::Legacy) => "This legacy add-on goes into the profile's add-ons folder",
             _ => "The add-on goes into the profile's own repository",
         };
-        ui.label(egui::RichText::new(format!("{into} and is enabled there. Every build launched with that profile sees it.")).size(12.0).color(pal.muted));
+        ui.label(egui::RichText::new(format!("{into} and is switched on there. Every build launched with that profile sees it.")).size(12.0).color(pal.muted));
         ui.add_space(8.0);
-        egui::Grid::new("install_grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
+        ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Profile").color(pal.muted));
-            egui::ComboBox::from_id_salt("install_profile").selected_text(&profile).width(220.0).show_ui(ui, |ui| {
+            egui::ComboBox::from_id_salt("install_profile").selected_text(&profile).width(300.0).show_ui(ui, |ui| {
                 for p in &profiles {
-                    ui.selectable_value(&mut profile, p.clone(), p);
+                    let note = match has.iter().find(|(name, _)| name == p).map(|(_, i)| i) {
+                        Some(i) => format!("  ·  has {}", i.version.as_deref().unwrap_or("it")),
+                        None => String::new(),
+                    };
+                    ui.selectable_value(&mut profile, p.clone(), format!("{p}{note}"));
                 }
             });
-            ui.end_row();
-            ui.label(egui::RichText::new("Install with").color(pal.muted));
-            let shown = builds.iter().find(|(n, _)| *n == build).map(|(_, v)| format!("Blender {v}")).unwrap_or_else(|| "Choose a build".into());
-            egui::ComboBox::from_id_salt("install_build").selected_text(shown).width(220.0).show_ui(ui, |ui| {
-                for (n, v) in &builds {
-                    ui.selectable_value(&mut build, n.clone(), format!("Blender {v}"));
-                }
-            });
-            ui.end_row();
         });
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new(status_of(&profile)).size(12.0).color(pal.text));
         if let Some(r) = &rec {
             if let Some(min) = &r.blender_version_min {
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(format!("Needs Blender {min} or newer")).size(11.5).color(pal.faint));
+                ui.label(egui::RichText::new(format!("Works with Blender {min} and newer.")).size(11.5).color(pal.faint));
             }
+        }
+        if !running.is_empty() {
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} is running with '{profile}'. Close it first: Blender saves its preferences when it quits, which would switch the add-on off again.",
+                    running.join(" and ")
+                ))
+                .size(12.0)
+                .color(pal.orange),
+            );
+        }
+        if let Some(why) = &no_build {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(why).size(12.0).color(pal.red));
         }
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            let can = !build.is_empty() && !profile.is_empty();
-            if ui.add_enabled(can, egui::Button::new(format!("{}  Install", I::DOWNLOAD))).clicked() {
-                go = true;
-            }
+            let can = !profile.is_empty() && running.is_empty() && no_build.is_none() && rec.is_some();
+            ui.add_enabled_ui(can, |ui| {
+                if icon_text_button(ui, &pal, I::DOWNLOAD, "Install", true).clicked() {
+                    go = true;
+                }
+            });
             if ui.button("Cancel").clicked() {
                 close = true;
             }
@@ -515,11 +545,11 @@ fn install(app: &mut App, ctx: &egui::Context) {
     });
     if go {
         app.dlg.install = None;
-        app.install_addon(ctx, id, build, profile);
+        app.install_addon(ctx, id, profile);
     } else if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
         app.dlg.install = None;
     } else {
-        app.dlg.install = Some((id, build, profile));
+        app.dlg.install = Some((id, profile));
     }
 }
 

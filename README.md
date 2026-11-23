@@ -89,8 +89,9 @@ older Blender opens them, and every restore backs up what it replaces first.
 **Add-ons from GitHub**: paste a repository link and Spindle downloads the add-on from its
 newest release, checked against the SHA-256 GitHub publishes. When there's no release to
 download, it offers to build one from the source. Superhive purchases download into the same
-add-on library (the API token stays in the OS credential store), and any add-on in it installs
-into any profile.
+add-on library (the API token stays in the OS credential store). Install puts an add-on into a
+profile, so every build launched with that profile has it, and the library shows which profiles
+each add-on is in, at which version, and whether it's switched on.
 
 ## Screenshots
 
@@ -246,9 +247,14 @@ profile blocks. A file newer than every build asks first.
   same depth needs a link to one folder; the error suggests it.
 - **Nothing from the repository is run**, so add-ons that need a build step of their own
   (compiled code, generated files, wheels that aren't committed) can't be built this way.
-- **Installing**: extensions go into the profile's `user_default` repository (Blender 4.2+);
-  legacy add-ons go through Blender's add-on installer into the profile's `scripts/addons`.
-  Either way they're enabled and the preferences are saved.
+- **Installing**: add-ons go into a profile, never into a build. Extensions go into the
+  profile's `user_default` repository (Blender 4.2+); legacy add-ons go through Blender's add-on
+  installer into the profile's `scripts/addons`. Either way they're enabled and the preferences
+  are saved. You choose only the profile: Spindle runs Blender's installer with a library build
+  that can install the add-on (4.2+ for an extension, inside the add-on's own Blender range),
+  preferring the series that last saved the profile's preferences so they keep their format.
+  It won't install while a Blender is running with the profile, since that Blender saves its
+  own preferences when it quits and would switch the add-on off again.
 - **Updating**: **Check GitHub for a Newer Version** on a GitHub add-on adds its link again,
   which picks up a newer release or commit.
 
@@ -279,7 +285,7 @@ spindle self-update [--check]
 spindle superhive login | list | sync
 spindle addons list
 spindle addons github <link> [--build]  # newest release; else offers a build from the source
-spindle addons install <id> --build 5.3
+spindle addons install <id> [--profile <profile>]  # into a profile; Spindle picks the installer build
 ```
 
 The app also takes `--tray` (start hidden in the tray), `--quit` (ask a running Spindle to exit),

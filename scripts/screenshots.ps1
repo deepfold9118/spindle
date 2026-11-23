@@ -65,13 +65,14 @@ try {
     }
     $prof = Join-Path $Library "profiles\default"
     $exts = @(
-        @{ id = "looptools"; name = "LoopTools"; min = "4.2.0"; max = $null },
-        @{ id = "node_arrange"; name = "Node Arrange"; min = "4.2.0"; max = $null }
+        # LoopTools matches the library's version; Node Arrange is one behind it.
+        @{ id = "looptools"; name = "LoopTools"; version = "4.7.7"; min = "4.2.0"; max = $null },
+        @{ id = "node_arrange"; name = "Node Arrange"; version = "1.3.0"; min = "4.2.0"; max = $null }
     )
     $modules = foreach ($e in $exts) {
         $d = Join-Path $prof "extensions\user_default\$($e.id)"
         $null = New-Item -ItemType Directory -Force $d
-        $toml = "schema_version = `"1.0.0`"`nid = `"$($e.id)`"`nname = `"$($e.name)`"`nversion = `"1.0.0`"`ntype = `"add-on`"`nblender_version_min = `"$($e.min)`"`n"
+        $toml = "schema_version = `"1.0.0`"`nid = `"$($e.id)`"`nname = `"$($e.name)`"`nversion = `"$($e.version)`"`ntype = `"add-on`"`nblender_version_min = `"$($e.min)`"`n"
         if ($e.max) { $toml += "blender_version_max = `"$($e.max)`"`n" }
         Set-Content -Encoding utf8NoBOM (Join-Path $d "blender_manifest.toml") $toml
         "bl_ext.user_default.$($e.id)"

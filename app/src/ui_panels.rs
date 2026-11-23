@@ -276,8 +276,7 @@ fn tasks(app: &mut App, ui: &mut egui::Ui) {
             let origin = app.selected_addon().and_then(|a| a.origin.clone());
             section(ui, &pal, "sec_addon", "Selected Add-on", true, |ui| {
                 if task_row(ui, &pal, I::DOWNLOAD, Some(if can { pal.green } else { pal.faint }), "Install into Profile…", can).clicked() {
-                    let build = app.builds.first().map(|b| b.name.clone()).unwrap_or_default();
-                    app.dlg.install = Some((id.clone(), build, app.active_profile.clone()));
+                    app.dlg.install = Some((id.clone(), app.active_profile.clone()));
                 }
                 if let Some(o) = &origin {
                     // Adding the same link again picks up a newer release or commit.
@@ -511,6 +510,18 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
                 kv(ui, &pal, "Type", &a.kind);
                 kv(ui, &pal, "Format", a.format.label());
                 kv(ui, &pal, "Source", crate::ui_center::source_label(&a.source));
+                let installs = app.installs_of(&a.id);
+                if installs.is_empty() {
+                    kv(ui, &pal, "Installed in", "No profile");
+                }
+                for (n, (p, i)) in installs.iter().enumerate() {
+                    let state = match i.enabled {
+                        Some(true) => " · on",
+                        Some(false) => " · off",
+                        None => "",
+                    };
+                    kv(ui, &pal, if n == 0 { "Installed in" } else { "" }, &format!("{p} · {}{state}", i.version.as_deref().unwrap_or("?")));
+                }
                 if let Some(o) = &a.origin {
                     kv(ui, &pal, "Repository", &o.repo);
                     kv(ui, &pal, if o.built { "Built from" } else { "Release" }, &o.git_ref);

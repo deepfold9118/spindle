@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.1.7] - 2026-11-23
+
+- **Add-ons install into profiles, not builds**: the install dialog asks only for the profile.
+  Spindle runs Blender's installer with a library build that can install the add-on (4.2+ for
+  an extension, inside the add-on's own Blender range), preferring the series that last saved
+  the profile's preferences so they keep their format. `spindle addons install <id>` no longer
+  needs `--build` (it's still there to override the choice).
+- **Where each add-on is installed**: the add-on library shows which profiles have each add-on
+  ("Installed in default", with the version when it differs and "off" when it's switched off,
+  or "Not installed in a profile"), and so do its Properties and `spindle addons list`.
+- Installing into a profile is refused while a Blender is running with it: that Blender saves
+  its preferences when it quits and would switch the add-on off again. The dialog says which
+  Blender to close.
+
 ## [0.1.6] - 2026-11-22
 
 - **Build downloads unpack again**: every download from Download Builds (and

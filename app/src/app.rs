@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use spindle_core::addons::{AddonLibrary, AddonRecord};
+use spindle_core::addons::{self, AddonLibrary, AddonRecord, InstalledAddon};
 pub use spindle_core::builds::Channel;
 use spindle_core::builds::{self, Build};
 use spindle_core::selfupdate;
@@ -163,12 +163,21 @@ enum GithubResult {
     Done,
 }
 
+/// What Spindle read from a profile folder on the last refresh.
+#[derive(Debug, Clone, Default)]
+pub struct ProfileState {
+    /// Extensions and legacy add-ons installed in it.
+    pub addons: Vec<InstalledAddon>,
+    /// The Blender series that last saved its preferences.
+    pub prefs_by: Option<(u32, u32)>,
+}
+
 #[derive(Default)]
 pub struct Dialogs {
     pub superhive_login: bool,
     pub token_input: String,
-    /// Install dialog: (add-on id, chosen build name, chosen profile).
-    pub install: Option<(String, String, String)>,
+    /// Install dialog: (add-on id, chosen profile).
+    pub install: Option<(String, String)>,
     pub new_profile: Option<String>,
     pub about: bool,
     pub compat: Option<CompatDialog>,
@@ -198,6 +207,8 @@ pub struct App {
     pub instances: Vec<Instance>,
     pub addons: Vec<AddonRecord>,
     pub profiles: Vec<String>,
+    /// Installed add-ons and preferences version of each profile.
+    pub profile_state: HashMap<String, ProfileState>,
     /// Preference backups of every profile, newest first.
     pub backups: Vec<Backup>,
     pub token_stored: bool,
@@ -264,6 +275,7 @@ impl App {
             instances: Vec::new(),
             addons: Vec::new(),
             profiles: Vec::new(),
+            profile_state: HashMap::new(),
             backups: Vec::new(),
             token_stored: false,
             load_error: None,
@@ -321,6 +333,14 @@ impl App {
         self.builds = builds::list(&self.sp).unwrap_or_default();
         self.addons = AddonLibrary::new(&self.sp).list().unwrap_or_default();
         self.profiles = Profile::list(&self.sp).unwrap_or_default();
+        self.profile_state = self
+            .profiles
+            .iter()
+            .map(|p| {
+                let dir = self.profile_dir(p);
+                (p.clone(), ProfileState { addons: addons::installed_in(&dir), prefs_by: backup::prefs_saved_by(&dir) })
+            })
+            .collect();
         self.backups = backup::list(&self.sp, None).unwrap_or_default();
         if !self.profiles.contains(&self.active_profile) {
             self.active_profile = self.sp.profile_name(None);
@@ -707,6 +727,22 @@ impl App {
         self.sp.profiles_dir().join(name)
     }
 
+    /// The profiles an add-on is installed in, with what each one has.
+    pub fn installs_of(&self, id: &str) -> Vec<(&str, &InstalledAddon)> {
+        self.profiles
+            .iter()
+            .filter_map(|p| {
+                let found = self.profile_state.get(p)?.addons.iter().find(|i| i.id.eq_ignore_ascii_case(id))?;
+                Some((p.as_str(), found))
+            })
+            .collect()
+    }
+
+    /// Blenders running with a profile right now.
+    pub fn running_with(&self, profile: &str) -> Vec<&Instance> {
+        self.instances.iter().filter(|i| i.profile.as_deref() == Some(profile)).collect()
+    }
+
     // ----------------------------------------------------------------------------------
     // Actions
 
@@ -1076,7 +1112,8 @@ impl App {
         }
     }
 
-    pub fn install_addon(&mut self, ctx: &egui::Context, id: String, build: String, profile: String) {
+    /// Install an add-on into a profile. Spindle picks the build that runs Blender's installer.
+    pub fn install_addon(&mut self, ctx: &egui::Context, id: String, profile: String) {
         let label = format!("Installing {id}");
         if self.busy(&label) {
             return;
@@ -1089,10 +1126,9 @@ impl App {
                 .latest(&id)
                 .map_err(|e| format!("{e:#}"))?
                 .ok_or_else(|| format!("'{id}' is not in the add-on library"))?;
-            let b = builds::find(&sp, &build).map_err(|e| format!("{e:#}"))?;
             let p = Profile::open(&sp, &profile).map_err(|e| format!("{e:#}"))?;
-            lib.install(&sp, &b, &p, &rec).map_err(|e| format!("{e:#}"))?;
-            Ok(format!("Installed {} {} into profile '{profile}'", rec.id, rec.version))
+            lib.install_into(&sp, &p, &rec).map_err(|e| format!("{e:#}"))?;
+            Ok(format!("Installed {} {} into profile '{profile}'", rec.name, rec.version))
         });
     }
 

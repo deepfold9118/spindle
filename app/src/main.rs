@@ -39,6 +39,8 @@ fn main() -> eframe::Result {
     let mut show_backups: Option<String> = None;
     // Open Add from GitHub on a link and look it up ("" for the empty dialog; for screenshots).
     let mut show_github: Option<String> = None;
+    // Open the install dialog for an add-on id (for screenshots).
+    let mut show_install: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
         let next = args.get(i + 1).map(|s| s.to_lowercase());
@@ -57,6 +59,7 @@ fn main() -> eframe::Result {
             ("--show-compat", Some(_)) => show_compat = Some(args[i + 1].clone()),
             ("--show-backups", Some(_)) => show_backups = Some(args[i + 1].clone()),
             ("--show-github", Some(_)) => show_github = Some(args[i + 1].clone()),
+            ("--show-install", Some(_)) => show_install = Some(args[i + 1].clone()),
             ("--theme", Some(t)) => theme = if t == "light" { Some(theme::ThemeMode::Light) } else { Some(theme::ThemeMode::Dark) },
             _ => {
                 i += 1;
@@ -146,6 +149,13 @@ fn main() -> eframe::Result {
             }
             if let Some(link) = &show_github {
                 a.open_github(&cc.egui_ctx, (!link.is_empty()).then(|| link.clone()));
+            }
+            if let Some(id) = &show_install {
+                let found = a.latest_addons().into_iter().find(|r| r.id.eq_ignore_ascii_case(id)).cloned();
+                if let Some(r) = found {
+                    a.selection = app::Selection::Addon { source: r.source.clone(), id: r.id.clone(), version: r.version.clone() };
+                    a.dlg.install = Some((r.id, a.active_profile.clone()));
+                }
             }
             Ok(Box::new(a))
         }),

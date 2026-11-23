@@ -363,13 +363,19 @@ fn addons_view(app: &mut App, ui: &mut Ui) {
         text_clip(ui, egui::pos2(tx, rect.center().y + 10.0), text_w, &sub, egui::FontId::proportional(11.5), pal.muted);
 
         let mid = rect.left() + rect.width() * 0.55;
-        let vb = badge(ui, &pal, egui::pos2(mid, rect.center().y - 8.0), &a.version, pal.raised, pal.text);
-        let kb = badge(ui, &pal, egui::pos2(vb.right() + 6.0, rect.center().y - 8.0), &a.kind, Color32::TRANSPARENT, pal.muted);
+        let top = rect.center().y - 17.0;
+        let vb = badge(ui, &pal, egui::pos2(mid, top), &a.version, pal.raised, pal.text);
+        let kb = badge(ui, &pal, egui::pos2(vb.right() + 6.0, top), &a.kind, Color32::TRANSPARENT, pal.muted);
         let source = match &a.origin {
             Some(o) if o.built => format!("{} · built", source_label(&a.source)),
             _ => source_label(&a.source).to_owned(),
         };
-        ui.painter().text(egui::pos2(kb.right() + 12.0, rect.center().y), Align2::LEFT_CENTER, source, egui::FontId::proportional(12.0), pal.muted);
+        ui.painter().text(egui::pos2(kb.right() + 12.0, vb.center().y), Align2::LEFT_CENTER, source, egui::FontId::proportional(12.0), pal.muted);
+        // Which profiles have it.
+        let (icon, colour, text) = installed_summary(app, a);
+        let y = rect.center().y + 11.0;
+        let ir = ui.painter().text(egui::pos2(mid, y), Align2::LEFT_CENTER, icon, icon_font(12.0), colour);
+        text_clip(ui, egui::pos2(ir.right() + 5.0, y), rect.right() - 162.0 - ir.right(), &text, egui::FontId::proportional(12.0), colour);
 
         let row = Rect::from_min_max(egui::pos2(rect.right() - 150.0, rect.top()), egui::pos2(rect.right() - 12.0, rect.bottom()));
         ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(Layout::right_to_left(Align::Center)), |ui| {
@@ -378,11 +384,36 @@ fn addons_view(app: &mut App, ui: &mut Ui) {
                 ui.add(egui::Spinner::new().size(14.0).color(pal.accent_text));
             } else if icon_text_button(ui, &pal, I::DOWNLOAD, "Install…", false).on_hover_text("Install into a profile").clicked() {
                 app.selection = sel.clone();
-                let build = app.builds.first().map(|b| b.name.clone()).unwrap_or_default();
-                app.dlg.install = Some((a.id.clone(), build, app.active_profile.clone()));
+                app.dlg.install = Some((a.id.clone(), app.active_profile.clone()));
             }
         });
     }
+}
+
+/// One line on where an add-on is installed: "Installed in default, studio (0.26.0)", with
+/// profiles that have another version or have it switched off marked as such.
+pub fn installed_summary(app: &App, a: &spindle_core::addons::AddonRecord) -> (&'static str, Color32, String) {
+    let installs = app.installs_of(&a.id);
+    if installs.is_empty() {
+        return (I::CIRCLE_DASHED, app.pal.faint, "Not installed in a profile".into());
+    }
+    let mut all_on = true;
+    let parts: Vec<String> = installs
+        .iter()
+        .map(|(p, i)| {
+            let mut notes = Vec::new();
+            if let Some(v) = i.version.as_deref().filter(|v| *v != a.version) {
+                notes.push(v.to_owned());
+            }
+            if i.enabled == Some(false) {
+                notes.push("off".to_owned());
+                all_on = false;
+            }
+            if notes.is_empty() { (*p).to_owned() } else { format!("{p} ({})", notes.join(", ")) }
+        })
+        .collect();
+    let colour = if all_on { app.pal.green } else { app.pal.orange };
+    (I::CIRCLE_CHECK, colour, format!("Installed in {}", parts.join(", ")))
 }
 
 // --------------------------------------------------------------------------------------------

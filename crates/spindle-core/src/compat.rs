@@ -133,7 +133,7 @@ fn wheel_fits(file: &str, py: (u32, u32)) -> bool {
 
 /// Is a module name enabled in the preferences? `bAddon.module` is stored as a
 /// NUL-terminated string, so look for the name followed by NUL.
-fn enabled_in(prefs: Option<&[u8]>, module: &str) -> bool {
+pub(crate) fn enabled_in(prefs: Option<&[u8]>, module: &str) -> bool {
     let Some(bytes) = prefs else { return true };
     let mut needle = module.as_bytes().to_vec();
     needle.push(0);

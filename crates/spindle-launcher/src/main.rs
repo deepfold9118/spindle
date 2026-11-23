@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use spindle_core::addons::AddonLibrary;
+use spindle_core::addons::{self, AddonLibrary};
 use spindle_core::profile::Profile;
 use spindle_core::builds::Channel;
 use spindle_core::downloads::{self, Available, Progress};
@@ -180,14 +180,16 @@ enum ProfilesCmd {
 enum AddonsCmd {
     /// List archives in the add-on library.
     List,
-    /// Install the newest stored version of an add-on into a profile.
+    /// Install the newest stored version of an add-on into a profile (every build launched
+    /// with the profile sees it). Refused while a Blender runs with the profile.
     Install {
         id: String,
-        /// Build whose extension tooling performs the install.
-        #[arg(long, short)]
-        build: String,
         #[arg(long, short)]
         profile: Option<String>,
+        /// Run Blender's installer with this build instead of the one Spindle picks (one that
+        /// can install the add-on, matching the series that saved the profile's preferences).
+        #[arg(long, short)]
+        build: Option<String>,
     },
     /// Add an add-on from GitHub: from the repository's newest release, or built from its
     /// source when no release has one (asks first, unless --build).
@@ -475,17 +477,38 @@ fn main() -> Result<()> {
         }
         Cmd::Addons(AddonsCmd::List) => {
             let lib = AddonLibrary::new(&sp);
+            let installed: Vec<(String, Vec<addons::InstalledAddon>)> = Profile::list(&sp)?
+                .into_iter()
+                .map(|p| {
+                    let found = addons::installed_in(&sp.profiles_dir().join(&p));
+                    (p, found)
+                })
+                .collect();
             for r in lib.list()? {
                 let from = r.origin.as_ref().map(|o| format!("  {}", o.url)).unwrap_or_default();
-                println!("{:<28} {:<12} {:<8} {:<10} {}{from}", r.id, r.version, r.kind, r.source, r.archive);
+                let mut profiles: Vec<String> = Vec::new();
+                for (p, found) in &installed {
+                    if let Some(i) = found.iter().find(|i| i.id.eq_ignore_ascii_case(&r.id)) {
+                        let off = if i.enabled == Some(false) { ", off" } else { "" };
+                        profiles.push(format!("{p} ({}{off})", i.version.as_deref().unwrap_or("?")));
+                    }
+                }
+                let profiles = if profiles.is_empty() { "-".to_owned() } else { profiles.join(", ") };
+                println!("{:<28} {:<12} {:<8} {:<10} in: {:<24} {}{from}", r.id, r.version, r.kind, r.source, profiles, r.archive);
             }
         }
         Cmd::Addons(AddonsCmd::Install { id, build, profile }) => {
             let lib = AddonLibrary::new(&sp);
             let rec = lib.latest(&id)?.with_context(|| format!("'{id}' is not in the add-on library"))?;
-            let build = builds::find(&sp, &build)?;
             let profile = Profile::open(&sp, &sp.profile_name(profile.as_deref()))?;
-            lib.install(&sp, &build, &profile, &rec)?;
+            match build {
+                Some(b) => {
+                    lib.install(&sp, &builds::find(&sp, &b)?, &profile, &rec)?;
+                }
+                None => {
+                    lib.install_into(&sp, &profile, &rec)?;
+                }
+            }
             println!("installed {} {} into profile '{}'", rec.id, rec.version, profile.name);
         }
         Cmd::Addons(AddonsCmd::Github { link, build }) => {
@@ -509,7 +532,7 @@ fn main() -> Result<()> {
                         None => String::new(),
                     };
                     println!("added {} {} to the add-on library, {from}", r.id, r.version);
-                    println!("install it with: spindle addons install {} --build <build>", r.id);
+                    println!("install it into a profile with: spindle addons install {} [--profile <profile>]", r.id);
                 }
                 github::Added::Present(r) => println!("{} {} is already in the add-on library", r.id, r.version),
                 github::Added::Offer(_) => bail!("nothing to download"),
