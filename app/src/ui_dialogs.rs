@@ -1,4 +1,5 @@
-//! Modal dialogs: Superhive token, install add-on into a profile, new profile, about.
+//! Modal dialogs: Superhive token, add from GitHub, install add-on into a profile, new
+//! profile, about.
 
 use crate::app::*;
 use crate::icons as I;
@@ -7,6 +8,7 @@ use crate::widgets::*;
 
 pub fn dialogs(app: &mut App, ctx: &egui::Context) {
     superhive_login(app, ctx);
+    github(app, ctx);
     install(app, ctx);
     new_profile(app, ctx);
     about(app, ctx);
@@ -352,6 +354,112 @@ fn superhive_login(app: &mut App, ctx: &egui::Context) {
     }
 }
 
+/// Add from GitHub: a link, then the offer to build from the source when no release has the
+/// add-on. Stays open (with a spinner) while the job runs, and shows errors in full.
+fn github(app: &mut App, ctx: &egui::Context) {
+    let Some(mut d) = app.dlg.github.clone() else { return };
+    let pal = app.pal;
+    let (mut lookup, mut build, mut back, mut close) = (false, false, false, false);
+    egui::Modal::new(egui::Id::new("m_github")).show(ctx, |ui| {
+        ui.set_width(460.0);
+        match &d.offer {
+            Some(o) => {
+                ui.label(egui::RichText::new(format!("Build {} from Source?", o.repo)).font(bold(15.0)));
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(format!("{}.", o.reason)).size(12.0).color(pal.text));
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Spindle can download {} and build an installable add-on from it, the way a release is made: \
+                         an extension with Blender's own extension builder (this needs a Blender 4.2 or newer build), \
+                         a legacy add-on as a zip of its folder. Nothing from the repository is run.",
+                        o.describe()
+                    ))
+                    .size(12.0)
+                    .color(pal.muted),
+                );
+            }
+            None => {
+                ui.label(egui::RichText::new("Add from GitHub").font(bold(15.0)));
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new(
+                        "Paste a repository link. Spindle downloads the add-on from the newest release, \
+                         or offers to build it from the source when there is no release to download.",
+                    )
+                    .size(12.0)
+                    .color(pal.muted),
+                );
+                ui.add_space(8.0);
+                let r = ui.add_enabled(
+                    !d.busy,
+                    egui::TextEdit::singleline(&mut d.link).hint_text("https://github.com/owner/repo").desired_width(f32::INFINITY),
+                );
+                if std::mem::take(&mut d.focus) {
+                    r.request_focus();
+                }
+                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    lookup = true;
+                }
+                ui.add_space(4.0);
+                ui.label(
+                    egui::RichText::new("A release link (…/releases/tag/v1.2) or a branch and folder (…/tree/main/my_addon) works too.")
+                        .size(11.0)
+                        .color(pal.faint),
+                );
+            }
+        }
+        if let Some(e) = &d.error {
+            ui.add_space(8.0);
+            egui::ScrollArea::vertical().max_height(180.0).show(ui, |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(e).size(11.5).color(pal.red)).selectable(true));
+            });
+        }
+        ui.add_space(10.0);
+        ui.horizontal(|ui| {
+            if d.busy {
+                ui.add(egui::Spinner::new().size(14.0).color(pal.accent_text));
+                let doing = if d.offer.is_some() { "Downloading and building…" } else { "Looking for the add-on…" };
+                ui.label(egui::RichText::new(doing).size(12.0).color(pal.muted));
+                if ui.button("Close").on_hover_text("It carries on in the background").clicked() {
+                    close = true;
+                }
+            } else if d.offer.is_some() {
+                if icon_text_button(ui, &pal, I::DOWNLOAD, "Download and Build", true).clicked() {
+                    build = true;
+                }
+                if ui.button("Back").clicked() {
+                    back = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+            } else {
+                // A link that doesn't parse explains itself in the dialog.
+                if icon_text_button(ui, &pal, I::DOWNLOAD, "Add", true).clicked() && !d.link.trim().is_empty() {
+                    lookup = true;
+                }
+                if ui.button("Cancel").clicked() {
+                    close = true;
+                }
+            }
+        });
+    });
+    if close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+        app.dlg.github = None;
+        return;
+    }
+    if back {
+        (d.offer, d.error) = (None, None);
+    }
+    app.dlg.github = Some(d);
+    if build {
+        app.start_github_build(ctx);
+    } else if lookup {
+        app.start_github_lookup(ctx);
+    }
+}
+
 fn install(app: &mut App, ctx: &egui::Context) {
     let Some((id, mut build, mut profile)) = app.dlg.install.clone() else { return };
     let pal = app.pal;
@@ -365,7 +473,11 @@ fn install(app: &mut App, ctx: &egui::Context) {
         let title = rec.as_ref().map(|r| format!("Install {} {}", r.name, r.version)).unwrap_or_else(|| format!("Install {id}"));
         ui.label(egui::RichText::new(title).font(bold(15.0)));
         ui.add_space(4.0);
-        ui.label(egui::RichText::new("The add-on goes into the profile's own repository and is enabled there. Every build launched with that profile sees it.").size(12.0).color(pal.muted));
+        let into = match rec.as_ref().map(|r| r.format) {
+            Some(spindle_core::addons::Format::Legacy) => "This legacy add-on goes into the profile's add-ons folder",
+            _ => "The add-on goes into the profile's own repository",
+        };
+        ui.label(egui::RichText::new(format!("{into} and is enabled there. Every build launched with that profile sees it.")).size(12.0).color(pal.muted));
         ui.add_space(8.0);
         egui::Grid::new("install_grid").num_columns(2).spacing([10.0, 8.0]).show(ui, |ui| {
             ui.label(egui::RichText::new("Profile").color(pal.muted));
@@ -464,7 +576,7 @@ fn about(app: &mut App, ctx: &egui::Context) {
         ui.add_space(6.0);
         ui.label(egui::RichText::new(
             "A build, profile and add-on manager for Blender. Every build shares one profile, \
-             agents see the Blenders that are really running, and Superhive purchases download into the library.",
+             agents see the Blenders that are really running, and add-ons from GitHub and Superhive download into the library.",
         ).size(12.0).color(pal.muted));
         ui.add_space(6.0);
         ui.label(egui::RichText::new("Inter (SIL OFL) · Lucide icons (ISC)").size(11.0).color(pal.faint));

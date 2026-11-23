@@ -31,7 +31,8 @@ pub fn left_panel(app: &mut App, ui: &mut egui::Ui) {
 fn library_tree(app: &mut App, ui: &mut egui::Ui) {
     let pal = app.pal;
     let ctx = ui.ctx().clone();
-    let bottom_h = 84.0;
+    // Room for the three buttons below the tree.
+    let bottom_h = 124.0;
     let tree_h = (ui.available_height() - bottom_h).max(60.0);
     egui::ScrollArea::vertical().id_salt("library_tree").max_height(tree_h).auto_shrink([false, false]).show(ui, |ui| {
         ui.spacing_mut().item_spacing.y = 1.0;
@@ -102,11 +103,11 @@ fn library_tree(app: &mut App, ui: &mut egui::Ui) {
                 }
             }
             if sources.is_empty() {
-                ui.label(egui::RichText::new("        Library is empty: sync Superhive").size(11.5).color(pal.faint));
+                ui.label(egui::RichText::new("        Library is empty").size(11.5).color(pal.faint));
             }
             for (source, n) in sources {
-                let label = if source == "superhive" { "Superhive".to_string() } else { source.clone() };
-                if tree_row(ui, &pal, 1, None, I::SHIELD_CHECK, &label, Some(n), false).0.clicked() {
+                let icon = if source == spindle_core::github::SOURCE { I::GIT_COMPARE } else { I::SHIELD_CHECK };
+                if tree_row(ui, &pal, 1, None, icon, crate::ui_center::source_label(&source), Some(n), false).0.clicked() {
                     app.set_view(View::Addons);
                 }
             }
@@ -141,6 +142,10 @@ fn library_tree(app: &mut App, ui: &mut egui::Ui) {
     let syncing = app.busy("Syncing Superhive");
     if wide_button(ui, &pal, I::DOWNLOAD, if syncing { "Syncing Superhive…" } else { "Sync Superhive Purchases" }).clicked() && !syncing {
         app.sync_superhive(&ctx);
+    }
+    ui.add_space(4.0);
+    if wide_button(ui, &pal, I::GIT_COMPARE, "Add Add-on from GitHub…").clicked() {
+        app.open_github(&ctx, None);
     }
 }
 
@@ -187,6 +192,9 @@ fn tasks(app: &mut App, ui: &mut egui::Ui) {
         let syncing = app.busy("Syncing Superhive");
         if task_row(ui, &pal, I::DOWNLOAD, None, if syncing { "Syncing Superhive…" } else { "Sync Superhive Purchases" }, !syncing).clicked() {
             app.sync_superhive(&ctx);
+        }
+        if task_row(ui, &pal, I::GIT_COMPARE, None, "Add Add-on from GitHub…", true).clicked() {
+            app.open_github(&ctx, None);
         }
         let ups = app.updates.len();
         let label = if ups > 0 { format!("Download Builds ({ups} new)") } else { "Download Builds".to_string() };
@@ -265,10 +273,21 @@ fn tasks(app: &mut App, ui: &mut egui::Ui) {
         }
         Selection::Addon { id, .. } => {
             let can = !app.builds.is_empty();
+            let origin = app.selected_addon().and_then(|a| a.origin.clone());
             section(ui, &pal, "sec_addon", "Selected Add-on", true, |ui| {
                 if task_row(ui, &pal, I::DOWNLOAD, Some(if can { pal.green } else { pal.faint }), "Install into Profile…", can).clicked() {
                     let build = app.builds.first().map(|b| b.name.clone()).unwrap_or_default();
                     app.dlg.install = Some((id.clone(), build, app.active_profile.clone()));
+                }
+                if let Some(o) = &origin {
+                    // Adding the same link again picks up a newer release or commit.
+                    let busy = app.busy(&format!("GitHub {}", o.repo));
+                    if task_row(ui, &pal, I::REFRESH_CW, None, if busy { "Checking GitHub…" } else { "Check GitHub for a Newer Version" }, !busy).clicked() {
+                        app.open_github(&ctx, Some(o.url.clone()));
+                    }
+                    if task_row(ui, &pal, I::EXTERNAL_LINK, None, "Open on GitHub", true).clicked() {
+                        platform::open_url(&o.url);
+                    }
                 }
             });
         }
@@ -490,7 +509,18 @@ fn properties(app: &mut App, ui: &mut egui::Ui) {
                 kv(ui, &pal, "Id", &a.id);
                 kv(ui, &pal, "Version", &a.version);
                 kv(ui, &pal, "Type", &a.kind);
-                kv(ui, &pal, "Source", &a.source);
+                kv(ui, &pal, "Format", a.format.label());
+                kv(ui, &pal, "Source", crate::ui_center::source_label(&a.source));
+                if let Some(o) = &a.origin {
+                    kv(ui, &pal, "Repository", &o.repo);
+                    kv(ui, &pal, if o.built { "Built from" } else { "Release" }, &o.git_ref);
+                    if !o.commit.is_empty() {
+                        kv(ui, &pal, "Commit", &o.commit[..o.commit.len().min(12)]);
+                    }
+                    if !o.path.is_empty() {
+                        kv(ui, &pal, "Folder", &o.path);
+                    }
+                }
                 kv(ui, &pal, "Blender", &format!("{} – {}", a.blender_version_min.as_deref().unwrap_or("any"), a.blender_version_max.as_deref().unwrap_or("")));
                 kv(ui, &pal, "Platforms", &if a.platforms.is_empty() { "All".to_string() } else { a.platforms.join(", ") });
                 kv(ui, &pal, "Archive", &a.archive);

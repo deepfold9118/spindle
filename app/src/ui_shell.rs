@@ -160,6 +160,9 @@ fn menus(app: &mut App, ui: &mut egui::Ui) {
             app.check_updates(&ctx, true);
         }
         ui.separator();
+        if item(ui, I::GIT_COMPARE, "Add Add-on from GitHub…", "", true) {
+            app.open_github(&ctx, None);
+        }
         if item(ui, I::DOWNLOAD, "Sync Superhive Purchases", "", !app.busy("Syncing Superhive")) {
             app.sync_superhive(&ctx);
         }

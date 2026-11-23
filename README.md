@@ -86,8 +86,11 @@ to launch builds. Star favourites; the first one is the default. It can update i
 included) and restore any backup later. Spindle backs the preferences up by itself before an
 older Blender opens them, and every restore backs up what it replaces first.
 
-Superhive purchases can be downloaded into Spindle's add-on library and installed into any
-profile; the API token stays in the OS credential store.
+**Add-ons from GitHub**: paste a repository link and Spindle downloads the add-on from its
+newest release, checked against the SHA-256 GitHub publishes. When there's no release to
+download, it offers to build one from the source. Superhive purchases download into the same
+add-on library (the API token stays in the OS credential store), and any add-on in it installs
+into any profile.
 
 ## Screenshots
 
@@ -217,6 +220,41 @@ When a `.blend` file is opened with Spindle it goes to a build of the series tha
 favourite first), else the default build, else the oldest newer build, skipping builds the
 profile blocks. A file newer than every build asks first.
 
+## Add-ons from GitHub
+
+<p align="center">
+  <img src="docs/screenshots/github.png" alt="Spindle offering to build an add-on from a GitHub repository that has no releases" width="720">
+</p>
+
+**Add Add-on from GitHub…** (Library menu, Task Panel, or the add-on library) and
+`spindle addons github <link>` take a repository link: `https://github.com/owner/repo`,
+`owner/repo`, a release (`…/releases/tag/v1.2`), or a branch, tag or commit and a folder
+(`…/tree/main/my_addon`).
+
+- **From a release**: the newest release (or the linked one) is searched for an asset that holds
+  an add-on (a `.zip` with `blender_manifest.toml` or `bl_info`, or a single-file `.py`),
+  preferring one named for your platform and skipping ones named for another. The download is
+  checked against the SHA-256 GitHub lists for it.
+- **Built from the source**: when there's no release, its release has no add-on archive, or the
+  link names a branch or folder, Spindle says so and offers to build it (the command line asks,
+  or builds straight away with `--build`). It downloads that exact commit, finds the add-on (the
+  shallowest `blender_manifest.toml`, else a package or `.py` file with `bl_info`) and packages it
+  the way a release is made: an extension with `blender --command extension build` from a
+  Blender 4.2+ build in the library (factory settings, no profile touched), a legacy add-on as a
+  zip under a valid module name (`Principled-Baker` installs as `Principled_Baker`). Built
+  versions carry the commit, like `1.5.1+b4af476`. A repository holding several add-ons at the
+  same depth needs a link to one folder; the error suggests it.
+- **Nothing from the repository is run**, so add-ons that need a build step of their own
+  (compiled code, generated files, wheels that aren't committed) can't be built this way.
+- **Installing**: extensions go into the profile's `user_default` repository (Blender 4.2+);
+  legacy add-ons go through Blender's add-on installer into the profile's `scripts/addons`.
+  Either way they're enabled and the preferences are saved.
+- **Updating**: **Check GitHub for a Newer Version** on a GitHub add-on adds its link again,
+  which picks up a newer release or commit.
+
+GitHub requests are anonymous (60 an hour) unless `GITHUB_TOKEN` or `GH_TOKEN` is set, which
+also reaches private repositories.
+
 ## Command line
 
 ```
@@ -240,6 +278,7 @@ spindle desktop [--autostart on|off] [--open-blend on|off] [--path on|off]
 spindle self-update [--check]
 spindle superhive login | list | sync
 spindle addons list
+spindle addons github <link> [--build]  # newest release; else offers a build from the source
 spindle addons install <id> --build 5.3
 ```
 
@@ -272,7 +311,7 @@ pwsh scripts/licenses.ps1     # regenerate THIRD-PARTY-LICENSES.html (needs carg
 | Path | Contents |
 |---|---|
 | `app/` | desktop app (eframe/egui): title bar, library tree, cards, Task Panel, tray |
-| `crates/spindle-core` | builds, downloads, profiles, compatibility, launching, instances, add-ons, Superhive, desktop integration, self-update |
+| `crates/spindle-core` | builds, downloads, profiles, compatibility, launching, instances, add-ons, Superhive, GitHub, desktop integration, self-update |
 | `crates/spindle-launcher` | the `spindle` command line |
 | `crates/spindle-mcp` | the MCP server |
 | `bridge/spindle_bridge.py` | heartbeat script installed into each profile's `scripts/startup` |

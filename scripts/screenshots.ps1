@@ -4,7 +4,7 @@
 
 .DESCRIPTION
   Builds a demo library with placeholder build folders, three profiles, a few free add-ons
-  from extensions.blender.org, a running instance and the public download listing, points
+  from extensions.blender.org and GitHub, a running instance and the public download listing, points
   Spindle at it with SPINDLE_CONFIG, and saves `spindle_app --screenshot` pictures. Nothing
   personal (paths, purchases, tokens) ends up in the pictures. The demo library is deleted
   afterwards; the real config and library are never touched.
@@ -97,6 +97,23 @@ try {
             sha256 = ("0" * 64); blender_version_min = "4.2.0"; blender_version_max = $null; platforms = @(); fetched = $now - 86400
         })
     }
+    # GitHub: one from a release asset, one Spindle built from the source (no releases).
+    $github = @(
+        @{ id = "dynamic_parent"; name = "Dynamic Parent"; version = "2.1.0"; dir = "2.1.0"; format = "legacy"; zip = "dynamic_parent_v2.1.0.zip"; min = "5.0.0"
+            origin = [ordered]@{ url = "https://github.com/romanvolodin/dynamic_parent"; repo = "romanvolodin/dynamic_parent"; git_ref = "v2.1.0"; commit = ""; path = ""; built = $false } },
+        @{ id = "matalogue"; name = "Matalogue"; version = "1.5.1+b4af476"; dir = "1.5.1_b4af476"; format = "extension"; zip = "matalogue-1.5.1.zip"; min = "4.2.0"
+            origin = [ordered]@{ url = "https://github.com/gregzaal/Matalogue"; repo = "gregzaal/Matalogue"; git_ref = "master"; commit = "b4af476e85bed94d3749a930e9c663cf2bd25ae7"; path = ""; built = $true } }
+    )
+    foreach ($a in $github) {
+        $d = Join-Path $Library "addons\github\$($a.id)\$($a.dir)"
+        $null = New-Item -ItemType Directory -Force $d
+        Set-Content (Join-Path $d $a.zip) ""
+        Write-Json (Join-Path $d "addon.json") ([ordered]@{
+            id = $a.id; name = $a.name; version = $a.version; kind = "add-on"; source = "github"; archive = $a.zip
+            sha256 = ("0" * 64); blender_version_min = $a.min; blender_version_max = $null; platforms = @(); fetched = $now - 3600
+            format = $a.format; origin = $a.origin
+        })
+    }
 
     # --- config, UI prefs, a running Blender and the download listing -------------------------
     $null = New-Item -ItemType Directory -Force $cfgDir
@@ -128,7 +145,9 @@ try {
         @("downloads", "dark", "downloads.png", @()),
         @("addons", "dark", "addons.png", @()),
         @("builds", "dark", "compatibility.png", @("--show-compat", "blender-4.1.1-stable")),
-        @("profiles", "dark", "backups.png", @("--show-backups", "default"))
+        @("profiles", "dark", "backups.png", @("--show-backups", "default")),
+        # Looks the repository up on GitHub (it has no releases, so the build offer shows).
+        @("addons", "dark", "github.png", @("--show-github", "https://github.com/Radivarig/UvSquares"))
     )
     foreach ($s in $shots) {
         $png = Join-Path $out $s[2]

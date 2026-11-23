@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.4] - 2026-11-22
+
+- **Add-ons from GitHub**: Add Add-on from GitHub… (Library menu, Task Panel, add-on library)
+  and `spindle addons github <link>` add an add-on from a repository link. Spindle downloads it
+  from the newest release (an asset for this platform, checked against GitHub's SHA-256). With
+  no release to download, it offers to build one from the source: an extension with a library
+  build's own `blender --command extension build`, a legacy add-on as a zip under a valid
+  module name. Nothing from the repository is run. Links to a release, branch, tag, commit or
+  folder work too, and Check GitHub for a Newer Version adds an add-on's link again.
+- **Legacy add-ons** (`bl_info`) in the add-on library install with Blender's add-on installer
+  into the profile's `scripts/addons`; extensions still go into `user_default`, and Spindle
+  says so instead of trying when the chosen build is older than 4.2.
+- Background Blender runs (add-on installs, extension builds) start without a console window
+  on Windows.
+
 ## [0.1.3] - 2026-11-22
 
 - **Preference backups**: back up a profile's preferences (`config/`: userpref.blend, the

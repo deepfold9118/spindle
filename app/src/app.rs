@@ -1,5 +1,6 @@
 //! Application state: library data from spindle-core, UI preferences, background jobs
-//! (Superhive sync, add-on installs, build downloads), the update checker and tray, and the
+//! (Superhive sync, GitHub add-ons, add-on installs, build downloads), the update checker and
+//! tray, and the
 //! actions the menus, task panel and cards call.
 
 use std::collections::HashMap;
@@ -18,6 +19,7 @@ use spindle_core::downloads::{self, Available, Catalog, Progress, Update};
 use spindle_core::instances::{self, Instance};
 use spindle_core::profile::Profile;
 use spindle_core::backup::{self, Backup};
+use spindle_core::github::{self, SourceOffer};
 use spindle_core::{Spindle, launch, superhive};
 
 use crate::theme::{self, Palette, ThemeMode};
@@ -140,6 +142,27 @@ pub struct CheckResult {
     pub outcome: Result<usize, String>,
 }
 
+/// The Add from GitHub dialog: a link, then (when there is no release to download) the
+/// offer to build from the source. It stays open while the lookup or build runs and shows
+/// what went wrong in full, since the status bar has room for one line.
+#[derive(Clone, Default)]
+pub struct GithubDialog {
+    pub link: String,
+    /// A lookup or build is running.
+    pub busy: bool,
+    pub error: Option<String>,
+    pub offer: Option<SourceOffer>,
+    /// Focus the link field on the next frame.
+    pub focus: bool,
+}
+
+/// What a GitHub job hands back to the dialog.
+enum GithubResult {
+    Offer(SourceOffer),
+    Failed(String),
+    Done,
+}
+
 #[derive(Default)]
 pub struct Dialogs {
     pub superhive_login: bool,
@@ -157,6 +180,7 @@ pub struct Dialogs {
     pub backups: Option<String>,
     /// Restore confirmation inside the backups dialog, by backup id.
     pub restore: Option<String>,
+    pub github: Option<GithubDialog>,
 }
 
 pub struct App {
@@ -213,6 +237,7 @@ pub struct App {
     /// an installed update sets.
     pub spindle_release: Option<spindle_core::selfupdate::Release>,
     restart_pending: Arc<std::sync::atomic::AtomicBool>,
+    github_result: Arc<Mutex<Option<GithubResult>>>,
 }
 
 impl App {
@@ -267,6 +292,7 @@ impl App {
             on_path: false,
             spindle_release: None,
             restart_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            github_result: Arc::new(Mutex::new(None)),
         };
         if app.screenshot.is_none() {
             app.start_background(&cc.egui_ctx);
@@ -446,6 +472,28 @@ impl App {
                     Err(msg) => self.toast(ctx, format!("Error: {msg}")),
                 }
             }
+        }
+        let github = self.github_result.lock().ok().and_then(|mut r| r.take());
+        match github {
+            // An offer opens the dialog again if it was closed while looking.
+            Some(GithubResult::Offer(offer)) => {
+                let d = self.dlg.github.get_or_insert_with(|| GithubDialog { link: offer.url.clone(), ..Default::default() });
+                d.busy = false;
+                d.error = None;
+                d.offer = Some(offer);
+            }
+            Some(GithubResult::Failed(e)) => {
+                if let Some(d) = self.dlg.github.as_mut().filter(|d| d.busy) {
+                    d.busy = false;
+                    d.error = Some(e);
+                }
+            }
+            Some(GithubResult::Done) => {
+                if self.dlg.github.as_ref().is_some_and(|d| d.busy) {
+                    self.dlg.github = None;
+                }
+            }
+            None => {}
         }
     }
 
@@ -941,6 +989,61 @@ impl App {
         });
     }
 
+    /// Open the Add from GitHub dialog (with a link: look it up straight away).
+    pub fn open_github(&mut self, ctx: &egui::Context, link: Option<String>) {
+        let start = link.is_some();
+        self.dlg.github = Some(GithubDialog { link: link.unwrap_or_default(), focus: !start, ..Default::default() });
+        if start {
+            self.start_github_lookup(ctx);
+        }
+    }
+
+    /// Look up the dialog's link in the background: the add-on is downloaded from a release,
+    /// or the dialog turns into the offer to build it from the source.
+    pub fn start_github_lookup(&mut self, ctx: &egui::Context) {
+        let Some(text) = self.dlg.github.as_ref().map(|d| d.link.clone()) else { return };
+        let link = match github::parse_link(&text) {
+            Ok(l) => l,
+            Err(e) => {
+                if let Some(d) = &mut self.dlg.github {
+                    d.error = Some(format!("{e:#}"));
+                }
+                return;
+            }
+        };
+        let label = format!("GitHub {}", link.repo_name());
+        if self.busy(&label) {
+            return;
+        }
+        if let Some(d) = &mut self.dlg.github {
+            (d.busy, d.error, d.offer) = (true, None, None);
+        }
+        self.toast(ctx, format!("Looking for an add-on in {}…", link.repo_name()));
+        let slot = self.github_result.clone();
+        self.spawn(&label, move || {
+            let outcome = Spindle::load().and_then(|sp| github::add(&sp, &AddonLibrary::new(&sp), &link));
+            finish_github(&slot, outcome)
+        });
+    }
+
+    /// Build the offered commit in the background.
+    pub fn start_github_build(&mut self, ctx: &egui::Context) {
+        let Some(offer) = self.dlg.github.as_ref().and_then(|d| d.offer.clone()) else { return };
+        let label = format!("GitHub {}", offer.repo);
+        if self.busy(&label) {
+            return;
+        }
+        if let Some(d) = &mut self.dlg.github {
+            (d.busy, d.error) = (true, None);
+        }
+        self.toast(ctx, format!("Downloading and building {}…", offer.repo));
+        let slot = self.github_result.clone();
+        self.spawn(&label, move || {
+            let outcome = Spindle::load().and_then(|sp| github::build(&sp, &AddonLibrary::new(&sp), &offer));
+            finish_github(&slot, outcome)
+        });
+    }
+
     pub fn save_token(&mut self, ctx: &egui::Context) {
         let token = std::mem::take(&mut self.dlg.token_input);
         match superhive::set_token(&token) {
@@ -1134,6 +1237,35 @@ fn update_checker(
         let _ = results.send(CheckResult { manual, outcome });
         ctx.request_repaint();
     }
+}
+
+/// Hand a GitHub job's outcome to the dialog; returns the status-bar message.
+fn finish_github(slot: &Mutex<Option<GithubResult>>, outcome: anyhow::Result<github::Added>) -> Result<String, String> {
+    let (result, toast) = match outcome {
+        Ok(github::Added::Offer(o)) => {
+            let msg = format!("{}; Spindle can build it from the source", o.reason);
+            (GithubResult::Offer(o), Ok(msg))
+        }
+        Ok(github::Added::Stored(r)) => {
+            let msg = match &r.origin {
+                Some(o) if o.built => format!("Built {} {} from {} and added it to the add-on library", r.name, r.version, o.git_ref),
+                _ => format!("Added {} {} to the add-on library", r.name, r.version),
+            };
+            (GithubResult::Done, Ok(msg))
+        }
+        Ok(github::Added::Present(r)) => {
+            (GithubResult::Done, Ok(format!("{} {} is already in the add-on library", r.name, r.version)))
+        }
+        Err(e) => {
+            let full = format!("{e:#}");
+            let first = full.lines().next().unwrap_or_default().to_owned();
+            (GithubResult::Failed(full), Err(first))
+        }
+    };
+    if let Ok(mut s) = slot.lock() {
+        *s = Some(result);
+    }
+    toast
 }
 
 /// The folder holding this Spindle's programs.

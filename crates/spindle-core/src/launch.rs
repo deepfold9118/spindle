@@ -55,11 +55,24 @@ pub fn launch(sp: &Spindle, build: &Build, profile: &Profile, args: &[String]) -
     Ok(child.id())
 }
 
+/// Keep a console program started from the app (blender.exe is one on Windows) from
+/// flashing a console window; its output is captured anyway.
+pub(crate) fn hide_console(_cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        _cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+}
+
 /// Run Blender headless (`-b` is added) with the profile and wait for it.
 pub fn run_background(sp: &Spindle, build: &Build, profile: &Profile, args: &[String]) -> Result<Output> {
     let mut full = vec!["-b".to_owned()];
     full.extend_from_slice(args);
-    let out = command(sp, build, profile, &full)?
+    let mut cmd = command(sp, build, profile, &full)?;
+    hide_console(&mut cmd);
+    let out = cmd
         .stdin(Stdio::null())
         .output()
         .with_context(|| format!("running {}", build.executable.display()))?;

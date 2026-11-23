@@ -296,6 +296,15 @@ fn running_view(app: &mut App, ui: &mut Ui) {
 // --------------------------------------------------------------------------------------------
 // Add-on library
 
+/// Display name of an add-on source.
+pub fn source_label(source: &str) -> &str {
+    match source {
+        "superhive" => "Superhive",
+        "github" => "GitHub",
+        other => other,
+    }
+}
+
 fn addons_view(app: &mut App, ui: &mut Ui) {
     let pal = app.pal;
     let ctx = ui.ctx().clone();
@@ -311,11 +320,15 @@ fn addons_view(app: &mut App, ui: &mut Ui) {
             &pal,
             I::PACKAGE,
             if app.addons.is_empty() { "The add-on library is empty" } else { "No add-ons match" },
-            if app.addons.is_empty() { "Sync your Superhive purchases to download them here" } else { "Clear the search to see every add-on" },
+            if app.addons.is_empty() { "Add one from a GitHub repository, or sync your Superhive purchases" } else { "Clear the search to see every add-on" },
         );
         if app.addons.is_empty() {
             ui.vertical_centered(|ui| {
-                if icon_text_button(ui, &pal, I::DOWNLOAD, "Sync Superhive Purchases", true).clicked() {
+                if icon_text_button(ui, &pal, I::GIT_COMPARE, "Add from GitHub…", true).clicked() {
+                    app.open_github(&ctx, None);
+                }
+                ui.add_space(6.0);
+                if icon_text_button(ui, &pal, I::DOWNLOAD, "Sync Superhive Purchases", false).clicked() {
                     app.sync_superhive(&ctx);
                 }
             });
@@ -348,7 +361,10 @@ fn addons_view(app: &mut App, ui: &mut Ui) {
         let mid = rect.left() + rect.width() * 0.55;
         let vb = badge(ui, &pal, egui::pos2(mid, rect.center().y - 8.0), &a.version, pal.raised, pal.text);
         let kb = badge(ui, &pal, egui::pos2(vb.right() + 6.0, rect.center().y - 8.0), &a.kind, Color32::TRANSPARENT, pal.muted);
-        let source = if a.source == "superhive" { "Superhive" } else { a.source.as_str() };
+        let source = match &a.origin {
+            Some(o) if o.built => format!("{} · built", source_label(&a.source)),
+            _ => source_label(&a.source).to_owned(),
+        };
         ui.painter().text(egui::pos2(kb.right() + 12.0, rect.center().y), Align2::LEFT_CENTER, source, egui::FontId::proportional(12.0), pal.muted);
 
         let row = Rect::from_min_max(egui::pos2(rect.right() - 150.0, rect.top()), egui::pos2(rect.right() - 12.0, rect.bottom()));

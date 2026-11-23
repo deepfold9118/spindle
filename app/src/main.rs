@@ -37,6 +37,8 @@ fn main() -> eframe::Result {
     let mut show_compat: Option<String> = None;
     // Open a profile's backups dialog (for screenshots).
     let mut show_backups: Option<String> = None;
+    // Open Add from GitHub on a link and look it up ("" for the empty dialog; for screenshots).
+    let mut show_github: Option<String> = None;
     let mut i = 1;
     while i < args.len() {
         let next = args.get(i + 1).map(|s| s.to_lowercase());
@@ -54,6 +56,7 @@ fn main() -> eframe::Result {
             }
             ("--show-compat", Some(_)) => show_compat = Some(args[i + 1].clone()),
             ("--show-backups", Some(_)) => show_backups = Some(args[i + 1].clone()),
+            ("--show-github", Some(_)) => show_github = Some(args[i + 1].clone()),
             ("--theme", Some(t)) => theme = if t == "light" { Some(theme::ThemeMode::Light) } else { Some(theme::ThemeMode::Dark) },
             _ => {
                 i += 1;
@@ -141,6 +144,9 @@ fn main() -> eframe::Result {
                 a.selection = app::Selection::Profile(p.clone());
                 a.dlg.backups = Some(p.clone());
             }
+            if let Some(link) = &show_github {
+                a.open_github(&cc.egui_ctx, (!link.is_empty()).then(|| link.clone()));
+            }
             Ok(Box::new(a))
         }),
     )
@@ -194,7 +200,8 @@ impl app::App {
     fn screenshot_step(&mut self, ctx: &egui::Context) {
         let Some(path) = self.screenshot.clone() else { return };
         ctx.request_repaint();
-        if !self.shot_requested && self.frame_no >= 120 {
+        // Background jobs (a --show-github lookup) finish first, within a minute.
+        if !self.shot_requested && self.frame_no >= 120 && (self.jobs.is_empty() || self.frame_no >= 3600) {
             self.shot_requested = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
         }

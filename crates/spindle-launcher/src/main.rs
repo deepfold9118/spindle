@@ -4,8 +4,8 @@ use spindle_core::addons::AddonLibrary;
 use spindle_core::profile::Profile;
 use spindle_core::builds::Channel;
 use spindle_core::downloads::{self, Available, Progress};
-use spindle_core::{Spindle, backup, blendfile, builds, compat, desktop, instances, launch, superhive};
-use std::io::Read;
+use spindle_core::{Spindle, backup, blendfile, builds, compat, desktop, github, instances, launch, superhive};
+use std::io::{IsTerminal, Read, Write};
 use std::path::PathBuf;
 
 /// Spindle: a build, profile and add-on manager for Blender.
@@ -188,6 +188,16 @@ enum AddonsCmd {
         build: String,
         #[arg(long, short)]
         profile: Option<String>,
+    },
+    /// Add an add-on from GitHub: from the repository's newest release, or built from its
+    /// source when no release has one (asks first, unless --build).
+    Github {
+        /// A repository link (https://github.com/owner/repo, or owner/repo), a release link
+        /// (.../releases/tag/<tag>), or a branch and folder (.../tree/<ref>/<folder>).
+        link: String,
+        /// Build from the source without asking when there is no release to download.
+        #[arg(long)]
+        build: bool,
     },
 }
 
@@ -466,7 +476,8 @@ fn main() -> Result<()> {
         Cmd::Addons(AddonsCmd::List) => {
             let lib = AddonLibrary::new(&sp);
             for r in lib.list()? {
-                println!("{:<28} {:<12} {:<8} {:<10} {}", r.id, r.version, r.kind, r.source, r.archive);
+                let from = r.origin.as_ref().map(|o| format!("  {}", o.url)).unwrap_or_default();
+                println!("{:<28} {:<12} {:<8} {:<10} {}{from}", r.id, r.version, r.kind, r.source, r.archive);
             }
         }
         Cmd::Addons(AddonsCmd::Install { id, build, profile }) => {
@@ -476,6 +487,33 @@ fn main() -> Result<()> {
             let profile = Profile::open(&sp, &sp.profile_name(profile.as_deref()))?;
             lib.install(&sp, &build, &profile, &rec)?;
             println!("installed {} {} into profile '{}'", rec.id, rec.version, profile.name);
+        }
+        Cmd::Addons(AddonsCmd::Github { link, build }) => {
+            let lib = AddonLibrary::new(&sp);
+            let link = github::parse_link(&link)?;
+            let mut added = github::add(&sp, &lib, &link)?;
+            if let github::Added::Offer(offer) = added.clone() {
+                println!("{}.", offer.reason);
+                println!("Spindle can download {} of {} and build the add-on from it.", offer.describe(), offer.repo);
+                let go = build || (std::io::stdin().is_terminal() && confirm("Download the source and build it? [y/N] ")?);
+                if !go {
+                    bail!("nothing added; run again with --build to build it from the source");
+                }
+                added = github::build(&sp, &lib, &offer)?;
+            }
+            match added {
+                github::Added::Stored(r) => {
+                    let from = match &r.origin {
+                        Some(o) if o.built => format!("built from {} ({})", o.git_ref, &o.commit[..o.commit.len().min(7)]),
+                        Some(o) => format!("from release {}", o.git_ref),
+                        None => String::new(),
+                    };
+                    println!("added {} {} to the add-on library, {from}", r.id, r.version);
+                    println!("install it with: spindle addons install {} --build <build>", r.id);
+                }
+                github::Added::Present(r) => println!("{} {} is already in the add-on library", r.id, r.version),
+                github::Added::Offer(_) => bail!("nothing to download"),
+            }
         }
         Cmd::Superhive(SuperhiveCmd::Login { stdin }) => {
             let token = if stdin {
@@ -540,6 +578,14 @@ fn catalog(sp: &Spindle, refresh: bool) -> Result<downloads::Catalog> {
 /// The build can use the profile (no blocker such as unreadable preferences).
 fn profile_usable(b: &builds::Build, profile: &Profile) -> bool {
     compat::check(b, &profile.name, &profile.root).worst() != Some(compat::Severity::Blocker)
+}
+
+fn confirm(prompt: &str) -> Result<bool> {
+    print!("{prompt}");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(matches!(line.trim().to_lowercase().as_str(), "y" | "yes"))
 }
 
 fn parse_on_off(s: &str) -> Result<bool, String> {

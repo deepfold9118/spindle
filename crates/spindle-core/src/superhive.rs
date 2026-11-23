@@ -5,7 +5,7 @@
 //! downloads purchased archives into its own library. It does not register the
 //! repository in Blender or copy the token anywhere else.
 
-use crate::addons::{AddonLibrary, AddonRecord, sanitize};
+use crate::addons::{AddonLibrary, AddonRecord, Format, sanitize};
 use crate::{Spindle, version};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
@@ -217,6 +217,8 @@ pub fn sync(sp: &Spindle, library: &AddonLibrary) -> Result<SyncReport> {
                 blender_version_max: e.blender_version_max.clone(),
                 platforms: e.platforms.clone(),
                 fetched: SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs(),
+                format: Format::Extension,
+                origin: None,
             };
             library.store(&rec, &bytes)?;
             Ok(rec)
@@ -251,7 +253,7 @@ fn archive_name(url: &str) -> String {
     percent_decode(last)
 }
 
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
