@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.6] - 2026-11-22
+
+- **Build downloads unpack again**: every download from Download Builds (and
+  `spindle builds download`) stopped after verifying with "don't know how to unpack
+  ….zip.part", because Spindle picked the unpacker from the name of the partly downloaded file
+  instead of the published one. Official releases, Daily and experimental builds now unpack into
+  the library as intended.
+
 ## [0.1.5] - 2026-11-22
 
 - **Finding downloads**: with no builds in the library, the Builds page now leads with

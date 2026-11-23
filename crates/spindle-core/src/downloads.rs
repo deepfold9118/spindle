@@ -503,7 +503,9 @@ fn unpack(sp: &Spindle, a: &Available, archive: &Path, dest: &Path, progress: &P
     let _ = fs::remove_dir_all(&tmp);
     fs::create_dir_all(&tmp)?;
     let result = (|| -> Result<()> {
-        let name = archive.file_name().map(|n| n.to_string_lossy().to_lowercase()).unwrap_or_default();
+        // The format comes from the published file name: the download itself is saved as
+        // "<file name>.part".
+        let name = a.file_name.to_lowercase();
         if name.ends_with(".zip") {
             unzip(archive, &tmp, progress)?;
         } else if name.ends_with(".tar.xz") {
@@ -645,6 +647,46 @@ pub fn by_channel(cat: &Catalog) -> BTreeMap<&'static str, Vec<&Available>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A download is unpacked from "<file name>.part" into the library, top folder dropped.
+    #[test]
+    fn unpacks_a_downloaded_zip() {
+        let lib = std::env::temp_dir().join(format!("spindle-unpack-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&lib);
+        let sp = Spindle { config_path: lib.join("config.toml"), config: crate::config::Config::default(), library: lib.clone() };
+        let file_name = "blender-9.9.9-test-x64.zip";
+        let part = lib.join("downloads").join(format!("{file_name}.part"));
+        fs::create_dir_all(part.parent().unwrap()).unwrap();
+        let mut zip = zip::ZipWriter::new(File::create(&part).unwrap());
+        let opts = zip::write::SimpleFileOptions::default();
+        zip.add_directory("blender-9.9.9-test-x64/", opts).unwrap();
+        zip.start_file(format!("blender-9.9.9-test-x64/{}", builds::executable_name()), opts).unwrap();
+        zip.write_all(b"not really blender").unwrap();
+        zip.start_file("blender-9.9.9-test-x64/9.9/scripts/x.py", opts).unwrap();
+        zip.write_all(b"pass").unwrap();
+        zip.finish().unwrap();
+
+        let a = Available {
+            channel: Channel::Stable,
+            version: "9.9.9".into(),
+            cycle: "stable".into(),
+            branch: "9.9".into(),
+            hash: String::new(),
+            url: String::new(),
+            file_name: file_name.into(),
+            size: None,
+            sha256_url: None,
+            published: None,
+            name: "blender-9.9.9-stable".into(),
+        };
+        let dest = sp.builds_dir().join(&a.name);
+        unpack(&sp, &a, &part, &dest, &Progress::default()).unwrap();
+        assert!(dest.join(builds::executable_name()).is_file());
+        assert!(dest.join("9.9/scripts/x.py").is_file());
+        assert!(dest.join(builds::META_FILE).is_file());
+        assert!(!sp.builds_dir().join(format!(".incoming-{}", a.name)).exists());
+        let _ = fs::remove_dir_all(&lib);
+    }
 
     #[test]
     fn release_listing_picks_newest_patch() {
