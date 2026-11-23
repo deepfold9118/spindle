@@ -119,11 +119,15 @@ fn builds_view(app: &mut App, ui: &mut Ui) {
             &pal,
             I::HARD_DRIVE,
             if app.builds.is_empty() { "No builds yet" } else { "No builds match" },
-            if app.builds.is_empty() { "Copy Blender builds into the library's builds folder, or use Add Build…" } else { "Clear the search or turn on more channels" },
+            if app.builds.is_empty() { "Download Blender from blender.org, or add a build you already have" } else { "Clear the search or turn on more channels" },
         );
         if app.builds.is_empty() {
             ui.vertical_centered(|ui| {
-                if icon_text_button(ui, &pal, I::PLUS, "Add Build…", true).clicked() {
+                if icon_text_button(ui, &pal, I::DOWNLOAD, "Download Builds…", true).clicked() {
+                    app.set_view(View::Downloads);
+                }
+                ui.add_space(4.0);
+                if icon_text_button(ui, &pal, I::PLUS, "Add Build…", false).clicked() {
                     app.add_external_build(&ctx);
                 }
             });
@@ -501,6 +505,18 @@ fn downloads_view(app: &mut App, ui: &mut Ui) {
     });
     if let Some(errs) = app.catalog.as_ref().map(|c| c.errors.clone()).filter(|e| !e.is_empty()) {
         ui.label(egui::RichText::new(format!("Some sources failed: {}", errs.join("; "))).size(11.5).color(pal.red));
+    }
+    // Say what the channel chips hide, so a switched-off channel doesn't look like missing builds.
+    let hidden = app.hidden_available();
+    if !hidden.is_empty() {
+        ui.horizontal(|ui| {
+            let what: Vec<String> = hidden.iter().map(|(c, n)| format!("{n} {}", c.label())).collect();
+            let text = format!("Not shown: {} (switched off under Show)", what.join(", "));
+            ui.label(egui::RichText::new(text).size(12.0).color(pal.muted));
+            if icon_text_button(ui, &pal, I::EYE, "Show All", false).clicked() {
+                app.show_all_channels();
+            }
+        });
     }
     ui.add_space(6.0);
 

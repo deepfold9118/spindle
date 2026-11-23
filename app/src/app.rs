@@ -607,15 +607,35 @@ impl App {
         }
     }
 
-    /// Downloadable builds that pass the channel chips and the search box.
-    pub fn visible_available(&self) -> Vec<&Available> {
+    /// Downloadable builds that pass the search box (whatever the channel chips say).
+    fn found_available(&self) -> impl Iterator<Item = &Available> {
         let q = self.quick_find.to_lowercase();
         self.catalog
             .iter()
             .flat_map(|c| c.builds.iter())
-            .filter(|a| self.channel_shown(a.channel))
-            .filter(|a| q.is_empty() || a.name.to_lowercase().contains(&q) || a.branch.to_lowercase().contains(&q))
+            .filter(move |a| q.is_empty() || a.name.to_lowercase().contains(&q) || a.branch.to_lowercase().contains(&q))
+    }
+
+    /// Downloadable builds that pass the channel chips and the search box.
+    pub fn visible_available(&self) -> Vec<&Available> {
+        self.found_available().filter(|a| self.channel_shown(a.channel)).collect()
+    }
+
+    /// Downloadable builds the channel chips hide, counted per channel.
+    pub fn hidden_available(&self) -> Vec<(Channel, usize)> {
+        [Channel::Stable, Channel::Lts, Channel::Daily, Channel::Experimental]
+            .into_iter()
+            .filter(|&c| !self.channel_shown(c))
+            .map(|c| (c, self.found_available().filter(|a| a.channel == c).count()))
+            .filter(|&(_, n)| n > 0)
             .collect()
+    }
+
+    /// Turns every channel chip back on.
+    pub fn show_all_channels(&mut self) {
+        let p = &mut self.prefs;
+        (p.show_stable, p.show_lts, p.show_daily, p.show_experimental) = (true, true, true, true);
+        self.prefs_dirty = true;
     }
 
     /// The installed build an available one corresponds to (same name, or same commit).

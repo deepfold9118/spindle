@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.5] - 2026-11-22
+
+- **Finding downloads**: with no builds in the library, the Builds page now leads with
+  Download Builds… (the list of official releases, Daily and experimental builds from
+  blender.org) and offers Add Build… for a build you already have below it. Before, it only
+  offered Add Build….
+- Download Builds says when the channel switches under Show hide listings ("Not shown: 8 Stable
+  (switched off under Show)") and has a Show All button, so a switched-off channel no longer
+  looks like missing releases.
+
 ## [0.1.4] - 2026-11-22
 
 - **Add-ons from GitHub**: Add Add-on from GitHub… (Library menu, Task Panel, add-on library)
