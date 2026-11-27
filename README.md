@@ -61,7 +61,8 @@ Before an older build opens a profile, Spindle says exactly what will break and 
 **Opens .blend files in the right build**<br>
 Register Spindle for `.blend` files (**Open with Spindle** on the right-click menu, and under
 Open with) and each one opens in the build of the Blender that saved it, read from the file
-header (zstd and gzip compressed files too).
+header (zstd and gzip compressed files too). Files Spindle opens get the Spindle blend-file
+icon on Windows.
 
 </td>
 </tr>

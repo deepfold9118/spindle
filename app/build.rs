@@ -1,27 +1,26 @@
 //! Windows build steps: embed the program icon (made from the same spindle mark as
-//! the title bar) and, if a running copy locks the .exe, move it aside so the linker
+//! the title bar) and the `.blend` file icon (artwork/spindle_blend_file.svg) and, if a running copy locks the .exe, move it aside so the linker
 //! can write the new one (the open window keeps working).
 
 #[path = "src/logo.rs"]
 mod logo;
 
-fn png_bytes(size: u32) -> Vec<u8> {
+fn png_bytes(size: u32, rgba: &[u8]) -> Vec<u8> {
     let mut out = Vec::new();
     {
         let mut enc = png::Encoder::new(&mut out, size, size);
         enc.set_color(png::ColorType::Rgba);
         enc.set_depth(png::BitDepth::Eight);
         let mut w = enc.write_header().expect("png header");
-        w.write_image_data(&logo::rasterize(size)).expect("png data");
+        w.write_image_data(rgba).expect("png data");
     }
     out
 }
 
-/// Write a multi-size .ico (PNG entries) and compile it into the program.
-fn embed_icon() {
-    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+/// A multi-size .ico (PNG entries) of the pixels `draw` makes at each size.
+fn ico_bytes(draw: fn(u32) -> Vec<u8>) -> Vec<u8> {
     let sizes = [16u32, 20, 24, 32, 40, 48, 64, 128, 256];
-    let images: Vec<Vec<u8>> = sizes.iter().map(|&s| png_bytes(s)).collect();
+    let images: Vec<Vec<u8>> = sizes.iter().map(|&s| png_bytes(s, &draw(s))).collect();
     let mut ico = Vec::new();
     ico.extend_from_slice(&[0, 0, 1, 0]);
     ico.extend_from_slice(&(sizes.len() as u16).to_le_bytes());
@@ -38,11 +37,25 @@ fn embed_icon() {
     for img in &images {
         ico.extend_from_slice(img);
     }
-    let ico_path = out_dir.join("spindle_app.ico");
-    std::fs::write(&ico_path, ico).unwrap();
+    ico
+}
+
+/// Compile the icons into the program: 1 is the program's own, 2 the icon of the `.blend`
+/// files it opens (spindle-core's desktop registration points at `"spindle_app.exe",-2`).
+fn embed_icon() {
+    let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+    let mut rc = String::new();
+    for (id, name, draw) in [
+        (1, "spindle_app.ico", logo::rasterize as fn(u32) -> Vec<u8>),
+        (2, "spindle_blend_file.ico", logo::rasterize_blend_file),
+    ] {
+        let ico_path = out_dir.join(name);
+        std::fs::write(&ico_path, ico_bytes(draw)).unwrap();
+        let ico_str = ico_path.display().to_string().replace(char::from(92), "/");
+        rc.push_str(&format!("{id} ICON \"{ico_str}\"\n"));
+    }
     let rc_path = out_dir.join("spindle_app.rc");
-    let ico_str = ico_path.display().to_string().replace(char::from(92), "/");
-    std::fs::write(&rc_path, format!("1 ICON \"{ico_str}\"{}", "\n")).unwrap();
+    std::fs::write(&rc_path, rc).unwrap();
     let _ = embed_resource::compile(&rc_path, embed_resource::NONE);
 }
 
@@ -50,6 +63,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=src/logo.rs");
     println!("cargo:rerun-if-changed=../artwork/spindle_symbol.svg");
+    println!("cargo:rerun-if-changed=../artwork/spindle_blend_file.svg");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }

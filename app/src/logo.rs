@@ -1,6 +1,8 @@
 //! The Spindle mark, drawn from the symbol artwork (artwork/spindle_symbol.svg).
 //! The program icon (window, taskbar and the Windows .exe via build.rs) and the
 //! title-bar mark are both rasterised from this one path, so they always match.
+//! Also rasterises the `.blend` file icon (artwork/spindle_blend_file.svg) that build.rs
+//! puts in the Windows .exe for the files Spindle opens.
 //! Self-contained (no egui) because build.rs includes this file too.
 
 #![allow(dead_code)]
@@ -12,15 +14,30 @@ pub const COLOR: [u8; 3] = [0xf2, 0x85, 0x26];
 /// the hub and its three arms minus the hole.
 pub const SVG: &str = include_str!("../../artwork/spindle_symbol.svg");
 
-/// The `d` attribute of the artwork's path.
-fn path_data() -> &'static str {
-    let start = SVG.find(" d=\"").map(|i| i + 4).unwrap_or(0);
-    let len = SVG[start..].find('"').unwrap_or(0);
-    &SVG[start..start + len]
+/// The `.blend` file icon artwork: paths of absolute M/C/L/Z commands, each filled
+/// (non-zero) with the colour of its `class`, on a square view box.
+pub const BLEND_FILE_SVG: &str = include_str!("../../artwork/spindle_blend_file.svg");
+
+/// The value of attribute `name` in `tag` (`name="value"`).
+fn attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let key = format!(" {name}=\"");
+    let start = tag.find(&key)? + key.len();
+    let len = tag[start..].find('"')?;
+    Some(&tag[start..start + len])
 }
 
-/// Flatten the path into closed polygons (cubic segments split into straight pieces).
+/// The `d` attribute of the artwork's path.
+fn path_data() -> &'static str {
+    attr(SVG, "d").unwrap_or("")
+}
+
+/// Flatten the symbol's path into closed polygons.
 pub fn polygons() -> Vec<Vec<[f32; 2]>> {
+    polygons_of(path_data())
+}
+
+/// Flatten path data into closed polygons (cubic segments split into straight pieces).
+fn polygons_of(d: &str) -> Vec<Vec<[f32; 2]>> {
     const STEPS: usize = 12;
     let mut nums: Vec<f32> = Vec::new();
     let mut cmds: Vec<(char, Vec<f32>)> = Vec::new();
@@ -32,7 +49,7 @@ pub fn polygons() -> Vec<Vec<[f32; 2]>> {
             num.clear();
         }
     };
-    for ch in path_data().chars() {
+    for ch in d.chars() {
         match ch {
             'M' | 'C' | 'L' | 'Z' | 'z' => {
                 flush(&mut num, &mut nums);
@@ -111,7 +128,6 @@ pub fn polygons() -> Vec<Vec<[f32; 2]>> {
 }
 
 /// Coverage (0..1) of the mark centred in a `size`×`size` square, aspect preserved.
-/// Scanline fill, even-odd, 4 sub-rows per pixel with exact horizontal coverage.
 pub fn coverage(size: u32) -> Vec<f32> {
     let polys = polygons();
     let (mut minx, mut miny, mut maxx, mut maxy) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
@@ -125,6 +141,15 @@ pub fn coverage(size: u32) -> Vec<f32> {
     let k = n * 0.94 / (maxx - minx).max(maxy - miny);
     let ox = (n - (maxx - minx) * k) / 2.0 - minx * k;
     let oy = (n - (maxy - miny) * k) / 2.0 - miny * k;
+    fill(&polys, [k, ox, oy], size, false)
+}
+
+/// Coverage (0..1) of `polys` scaled by `t[0]` and moved by `(t[1], t[2])` in a
+/// `size`×`size` square. Scanline fill, even-odd or non-zero, 4 sub-rows per pixel with
+/// exact horizontal coverage.
+fn fill(polys: &[Vec<[f32; 2]>], t: [f32; 3], size: u32, nonzero: bool) -> Vec<f32> {
+    let [k, ox, oy] = t;
+    let n = size as f32;
     let edges: Vec<([f32; 2], [f32; 2])> = polys
         .iter()
         .flat_map(|poly| {
@@ -138,7 +163,9 @@ pub fn coverage(size: u32) -> Vec<f32> {
 
     const SUB: u32 = 4;
     let mut cov = vec![0.0f32; (size * size) as usize];
-    let mut xs: Vec<f32> = Vec::new();
+    // Crossings of a sub-row: x and the edge's direction (+1 down, -1 up).
+    let mut xs: Vec<(f32, i32)> = Vec::new();
+    let mut spans: Vec<(f32, f32)> = Vec::new();
     for py in 0..size {
         let row = &mut cov[(py * size) as usize..((py + 1) * size) as usize];
         for s in 0..SUB {
@@ -146,12 +173,22 @@ pub fn coverage(size: u32) -> Vec<f32> {
             xs.clear();
             for (a, b) in &edges {
                 if (a[1] <= y && y < b[1]) || (b[1] <= y && y < a[1]) {
-                    xs.push(a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]));
+                    let dir = if a[1] < b[1] { 1 } else { -1 };
+                    xs.push((a[0] + (y - a[1]) * (b[0] - a[0]) / (b[1] - a[1]), dir));
                 }
             }
-            xs.sort_by(|p, q| p.total_cmp(q));
-            for span in xs.chunks_exact(2) {
-                let (x0, x1) = (span[0].max(0.0), span[1].min(n));
+            xs.sort_by(|p, q| p.0.total_cmp(&q.0));
+            spans.clear();
+            let mut winding = 0;
+            for (i, &(x, dir)) in xs.iter().enumerate() {
+                winding += if nonzero { dir } else { 1 };
+                let inside = if nonzero { winding != 0 } else { winding % 2 == 1 };
+                if let (true, Some(&(next, _))) = (inside, xs.get(i + 1)) {
+                    spans.push((x, next));
+                }
+            }
+            for &(sx0, sx1) in &spans {
+                let (x0, x1) = (sx0.max(0.0), sx1.min(n));
                 if x1 <= x0 {
                     continue;
                 }
@@ -164,6 +201,53 @@ pub fn coverage(size: u32) -> Vec<f32> {
         }
     }
     cov
+}
+
+/// RGBA pixels (straight alpha) of the `.blend` file icon, its view box fitted to a
+/// `size`×`size` square.
+pub fn rasterize_blend_file(size: u32) -> Vec<u8> {
+    rasterize_svg(BLEND_FILE_SVG, size)
+}
+
+/// RGBA pixels (straight alpha) of artwork made of `<path d=".." class="..">` elements
+/// filled (non-zero) with the `.class{fill:#rrggbb}` colours of its style sheet, painted
+/// in order, the view box fitted to a `size`×`size` square.
+fn rasterize_svg(svg: &str, size: u32) -> Vec<u8> {
+    let vb: Vec<f32> = attr(svg, "viewBox")
+        .unwrap_or("")
+        .split([' ', ','])
+        .filter_map(|v| v.parse().ok())
+        .collect();
+    let [vx, vy, vw, vh] = vb[..] else { panic!("artwork without a viewBox") };
+    let n = size as f32;
+    let k = n / vw.max(vh);
+    let t = [k, (n - vw * k) / 2.0 - vx * k, (n - vh * k) / 2.0 - vy * k];
+    let colour = |class: &str| -> [f32; 3] {
+        let key = format!(".{class}{{fill:#");
+        let hex = svg.find(&key).and_then(|i| svg.get(i + key.len()..i + key.len() + 6)).unwrap_or("000000");
+        let c = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).unwrap_or(0) as f32 / 255.0;
+        [c(0), c(2), c(4)]
+    };
+    // Premultiplied colour and alpha, each path painted over the ones before it.
+    let mut acc = vec![[0.0f32; 4]; (size * size) as usize];
+    for tag in svg.split("<path").skip(1) {
+        let tag = &tag[..tag.find('>').unwrap_or(tag.len())];
+        let Some(d) = attr(tag, "d") else { continue };
+        let rgb = colour(attr(tag, "class").unwrap_or(""));
+        for (px, c) in acc.iter_mut().zip(fill(&polygons_of(d), t, size, true)) {
+            let a = c.clamp(0.0, 1.0);
+            for i in 0..3 {
+                px[i] = rgb[i] * a + px[i] * (1.0 - a);
+            }
+            px[3] = a + px[3] * (1.0 - a);
+        }
+    }
+    let mut out = Vec::with_capacity(acc.len() * 4);
+    for [r, g, b, a] in acc {
+        let un = |v: f32| if a > 0.0 { (v / a * 255.0).round().clamp(0.0, 255.0) as u8 } else { 0 };
+        out.extend_from_slice(&[un(r), un(g), un(b), (a * 255.0).round() as u8]);
+    }
+    out
 }
 
 /// RGBA pixels (straight alpha) of the mark in its logo colour.

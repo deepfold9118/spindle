@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.9] - 2026-11-26
+
+- **A file icon for .blend files**: on Windows, `.blend` files that open with Spindle show the
+  Spindle blend-file icon (a page with the Blender logo and the Spindle mark) in place of the
+  Spindle program icon. An existing registration switches to it when 0.1.9 starts.
+
 ## [0.1.8] - 2026-11-23
 
 - **Add add-ons from a file**: Add Add-on from File… (Library menu, Task Panel, empty add-on

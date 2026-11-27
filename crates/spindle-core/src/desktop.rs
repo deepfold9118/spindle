@@ -97,7 +97,8 @@ pub fn refresh(app_exe: &Path) {
     if autostart().is_some_and(|p| gone(&p)) {
         let _ = set_autostart(true, app_exe);
     }
-    // Also when this copy's registration predates part of it (the right-click item, 0.1.8).
+    // Also when this copy's registration predates part of it (the right-click item, 0.1.8;
+    // the file icon, 0.1.9).
     if blend_association().is_some_and(|p| gone(&p) || (p == app_exe && imp::blend_incomplete())) {
         let _ = set_blend_association(true, app_exe);
     }
@@ -192,6 +193,12 @@ mod imp {
         format!(r"{CLASSES}\Applications\{file}")
     }
 
+    /// Icon of `.blend` files Spindle opens: the program's icon resource 2, made from
+    /// artwork/spindle_blend_file.svg (see the app's build.rs).
+    fn file_icon(app_exe: &Path) -> String {
+        format!("\"{}\",-2", app_exe.display())
+    }
+
     pub fn blend_association() -> Option<PathBuf> {
         let key = hkcu().open_subkey_with_flags(format!(r"{CLASSES}\{PROGID}\shell\open\command"), KEY_READ).ok()?;
         let cmd: String = key.get_value("").ok()?;
@@ -206,7 +213,7 @@ mod imp {
             let (progid, _) = root.create_subkey(format!(r"{CLASSES}\{PROGID}"))?;
             progid.set_value("", &"Blender File")?;
             progid.set_value("FriendlyTypeName", &"Blender File")?;
-            progid.create_subkey("DefaultIcon")?.0.set_value("", &icon)?;
+            progid.create_subkey("DefaultIcon")?.0.set_value("", &file_icon(app_exe))?;
             progid.create_subkey(r"shell\open")?.0.set_value("FriendlyAppName", &"Spindle")?;
             progid.create_subkey(r"shell\open\command")?.0.set_value("", &open)?;
             // Offered under "Open with" for .blend without taking over the default app.
@@ -241,9 +248,15 @@ mod imp {
         std::process::Command::new("explorer.exe").arg("ms-settings:defaultapps").spawn().is_ok()
     }
 
-    /// The registration lacks the right-click item (made by Spindle before 0.1.8).
+    /// The registration lacks the right-click item (made by Spindle before 0.1.8) or the
+    /// `.blend` file icon (before 0.1.9).
     pub fn blend_incomplete() -> bool {
+        let icon: Option<String> = hkcu()
+            .open_subkey_with_flags(format!(r"{CLASSES}\{PROGID}\DefaultIcon"), KEY_READ)
+            .and_then(|k| k.get_value(""))
+            .ok();
         hkcu().open_subkey_with_flags(format!(r"{VERB}\command"), KEY_READ).is_err()
+            || !icon.is_some_and(|i| i.ends_with(",-2"))
     }
 
     /// `%LOCALAPPDATA%\Programs\Spindle` -> `C:\Users\me\AppData\Local\Programs\Spindle`
